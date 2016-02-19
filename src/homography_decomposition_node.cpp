@@ -5,7 +5,8 @@
 #include <homography_vsc_cl/ReferencePoint.h>
 #include <homography_vsc_cl/HomogDecompSolns.h>
 
-#include <opencv2/core/core.hpp>
+#include <Eigen/Dense>
+#include <opencv2/core/eigen.hpp>
 #include <opencv2/calib3d/calib3d.hpp>
 
 class HomogDecomp
@@ -15,6 +16,7 @@ class HomogDecomp
     ros::ServiceServer service;
     ros::Subscriber imagePtsSub;
     ros::Subscriber camInfoSub;
+    ros::Publisher solnPub;
     
     // Parameters
     bool referenceSet;
@@ -56,7 +58,8 @@ public:
             ros::Duration(0.1).sleep();
         } while (!(ros::isShuttingDown()) and !referenceSet);
         
-        // Subscribe to image points
+        // Solution publisher and Subscribe to image points
+        solnPub = nh.advertise<homography_vsc_cl::HomogDecompSolns>("homogDecompSoln",10);
         imagePtsSub = nh.subscribe("markerPoints",1,&HomogDecomp::pointCB,this);
     }
     
@@ -106,76 +109,109 @@ public:
     
     void pointCB(const homography_vsc_cl::ImagePoints& points)
     {
-        // get points
-        std::vector<cv::Point2d> newPoints(4);
-        newPoints[0] = cv::Point2d(points.pr.x,points.pr.y);
-        newPoints[1] = cv::Point2d(points.pg.x,points.pg.y);
-        newPoints[2] = cv::Point2d(points.pc.x,points.pc.y);
-        newPoints[3] = cv::Point2d(points.pp.x,points.pp.y);
-        
-        // Calculate homography
-        cv::Mat G = cv::findHomography(refPoints,newPoints,0);
-        cv::Mat H_hat = (camMat.inv(cv::DECOMP_LU)*G)*camMat;
-        cv::SVD svd = cv::SVD(H_hat,cv::SVD::NO_UV);
-        double svds[3] = {svd.w.at<double>(0,0), svd.w.at<double>(1,0), svd.w.at<double>(2,0)};
-        std::sort(svds,svds+3);
-        double gamma = svds[1];
-        cv::Mat H = (1.0/gamma)*H_hat;
-        
-        // Decompose
-        std::vector<cv::Mat> R, T, n;
-        double alphaRed[4];
-        double alphaGreen[4];
-        double alphaCyan[4];
-        double alphaPurple[4];
-        int successful_decomp = cv::decomposeHomographyMat(G,camMat,R,T,n);
-        
-        // Reduce to two solutions, and flip sign if necessary
-        std::vector<cv::Point2d> temp;
-        cv::undistortPoints(newPoints,temp,camMat,cv::Mat());
-        cv::Mat m = cv::Mat::ones(4,3,CV_64F);
-        m.at<double>(0,0) = temp[0].x; m.at<double>(0,1) = temp[0].y; // red
-        m.at<double>(1,0) = temp[1].x; m.at<double>(1,1) = temp[1].y; // green
-        m.at<double>(2,0) = temp[2].x; m.at<double>(2,1) = temp[2].y; // cyan
-        m.at<double>(3,0) = temp[3].x; m.at<double>(3,1) = temp[3].y; // purple
-        std::vector<int> goodSolutionIndex;
-        for (int ii = 0; ii < successful_decomp; ii++)
+        if (points.features_found)
         {
-            // get alpha
-            alphaRed[ii] = m.at<double>(0,3)/(H.row(2).dot(mRef.row(0).t()));
-            alphaGreen[ii] = m.at<double>(1,3)/(H.row(2).dot(mRef.row(1).t()));
-            alphaCyan[ii] = m.at<double>(2,3)/(H.row(2).dot(mRef.row(2).t()));
-            alphaPurple[ii] = m.at<double>(3,3)/(H.row(2).dot(mRef.row(3).t()));
+            // get points
+            std::vector<cv::Point2d> newPoints(4);
+            newPoints[0] = cv::Point2d(points.pr.x,points.pr.y);
+            newPoints[1] = cv::Point2d(points.pg.x,points.pg.y);
+            newPoints[2] = cv::Point2d(points.pc.x,points.pc.y);
+            newPoints[3] = cv::Point2d(points.pp.x,points.pp.y);
             
-            // check if possible solution
-            if (!cv::countNonZero(m*R[ii]*n[ii] < 0))
+            // Calculate homography
+            cv::Mat G = cv::findHomography(refPoints,newPoints,0);
+            cv::Mat H_hat = (camMat.inv(cv::DECOMP_LU)*G)*camMat;
+            cv::SVD svd = cv::SVD(H_hat,cv::SVD::NO_UV);
+            double svds[3] = {svd.w.at<double>(0,0), svd.w.at<double>(1,0), svd.w.at<double>(2,0)};
+            std::sort(svds,svds+3);
+            double gamma = svds[1];
+            cv::Mat H = (1.0/gamma)*H_hat;
+            
+            // Decompose
+            std::vector<cv::Mat> R, T, n;
+            double alphaRed[4];
+            double alphaGreen[4];
+            double alphaCyan[4];
+            double alphaPurple[4];
+            int successful_decomp = cv::decomposeHomographyMat(G,camMat,R,T,n);
+            
+            // Reduce to two solutions, and flip sign if necessary
+            std::vector<cv::Point2d> temp;
+            cv::undistortPoints(newPoints,temp,camMat,cv::Mat());
+            cv::Mat m = cv::Mat::ones(4,3,CV_64F);
+            m.at<double>(0,0) = temp[0].x; m.at<double>(0,1) = temp[0].y; // red
+            m.at<double>(1,0) = temp[1].x; m.at<double>(1,1) = temp[1].y; // green
+            m.at<double>(2,0) = temp[2].x; m.at<double>(2,1) = temp[2].y; // cyan
+            m.at<double>(3,0) = temp[3].x; m.at<double>(3,1) = temp[3].y; // purple
+            std::vector<int> goodSolutionIndex;
+            for (int ii = 0; ii < successful_decomp; ii++)
             {
-                goodSolutionIndex.push_back(ii);
+                // get alpha
+                alphaRed[ii] = m.at<double>(0,3)/(H.row(2).dot(mRef.row(0).t()));
+                alphaGreen[ii] = m.at<double>(1,3)/(H.row(2).dot(mRef.row(1).t()));
+                alphaCyan[ii] = m.at<double>(2,3)/(H.row(2).dot(mRef.row(2).t()));
+                alphaPurple[ii] = m.at<double>(3,3)/(H.row(2).dot(mRef.row(3).t()));
+                
+                // check if possible solution
+                if (!cv::countNonZero(m*R[ii]*n[ii] < 0))
+                {
+                    goodSolutionIndex.push_back(ii);
+                }
+                
+                // check if rotation is improper
+                if (cv::determinant(R[ii]) < 0)
+                {
+                    R[ii] = -1*R[ii];
+                    T[ii] = -1*T[ii];
+                    alphaRed[ii] = -1*alphaRed[ii];
+                }
             }
             
-            // check if rotation is improper
-            if (cv::determinant(R[ii]) < 0)
+            // Construct message
+            homography_vsc_cl::HomogDecompSolns msg;
+            msg.header.stamp = points.header.stamp;
+            
+            if (goodSolutionIndex.size() > 0)
             {
-                R[ii] = -1*R[ii];
-                T[ii] = -1*T[ii];
-                alphaRed[ii] = -1*alphaRed[ii];
+                // Convert rotation matrix to quaternion
+                std::vector<Eigen::Quaterniond> q(goodSolutionIndex.size());
+                for (int ii = 0; ii < goodSolutionIndex.size(); ii++)
+                {
+                    Eigen::Matrix3d eigR;
+                    cv::cv2eigen(R[goodSolutionIndex[ii]],eigR);
+                    q[ii] = Eigen::Quaterniond(eigR);
+                }
+                
+                // Construct message
+                msg.newPixels = points;
+                msg.refPixels = refPointsMsg;
+                msg.pose1.position.x = T[goodSolutionIndex[0]].at<double>(0,0);
+                msg.pose1.position.y = T[goodSolutionIndex[0]].at<double>(1,0);
+                msg.pose1.position.z = T[goodSolutionIndex[0]].at<double>(2,0);
+                msg.pose1.orientation.x = q[0].x();
+                msg.pose1.orientation.y = q[0].y();
+                msg.pose1.orientation.z = q[0].z();
+                msg.pose1.orientation.w = q[0].w();
+                
+                if (goodSolutionIndex.size() > 1)
+                {
+                    msg.pose2.position.x = T[goodSolutionIndex[1]].at<double>(0,0);
+                    msg.pose2.position.y = T[goodSolutionIndex[1]].at<double>(1,0);
+                    msg.pose2.position.z = T[goodSolutionIndex[1]].at<double>(2,0);
+                    msg.pose2.orientation.x = q[1].x();
+                    msg.pose2.orientation.y = q[1].y();
+                    msg.pose2.orientation.z = q[1].z();
+                    msg.pose2.orientation.w = q[1].w();
+                }
             }
+            else
+            {
+                msg.decomp_successful = false;
+            }
+            
+            // publish
+            solnPub.publish(msg);
         }
-        
-        // Convert rotation matrix to quaternion
-        
-        // Construct message
-        homography_vsc_cl::HomogDecompSolns msg;
-        msg.header.stamp = points.header.stamp;
-        msg.newPixels = points;
-        msg.refPixels = refPointsMsg;
-        msg.pose1.position.x = T[goodSolutionIndex[0]].at<double>(0,0);
-        msg.pose1.position.y = T[goodSolutionIndex[0]].at<double>(1,0);
-        msg.pose1.position.z = T[goodSolutionIndex[0]].at<double>(2,0);
-        msg.pose2.position.x = T[goodSolutionIndex[1]].at<double>(0,0);
-        msg.pose2.position.y = T[goodSolutionIndex[1]].at<double>(1,0);
-        msg.pose2.position.z = T[goodSolutionIndex[1]].at<double>(2,0);
-        
     }
     
 }; // end HomogDecomp class

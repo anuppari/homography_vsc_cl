@@ -5,6 +5,7 @@ project(homography_vsc_cl)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(cmake_modules REQUIRED)
+find_package(Eigen REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
@@ -122,6 +123,7 @@ catkin_package(
 # include_directories(include)
 include_directories(
   ${catkin_INCLUDE_DIRS}
+  ${Eigen_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
 )
 

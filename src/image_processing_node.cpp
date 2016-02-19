@@ -52,8 +52,8 @@ public:
         ROS_DEBUG("Got camera parameters");
         
         // Publisher and subscriber
-        imagePub = it.advertise(cameraName+"/image_processed",1);
-        pixelPub = nh.advertise<homography_vsc_cl::ImagePoints>("markerPoints",1);
+        imagePub = it.advertise(cameraName+"/image_processed",10);
+        pixelPub = nh.advertise<homography_vsc_cl::ImagePoints>("markerPoints",10);
         imageSub = it.subscribe(cameraName+"/image_raw", 1, &ImageProcessing::imageCB,this);
     }
     
@@ -135,7 +135,13 @@ public:
         imagePub.publish(cv_ptr->toImageMsg());
         
         // Publish points
-        
+        homography_vsc_cl::ImagePoints pointsMsg;
+        pointsMsg.header.stamp = msg->header.stamp;
+        pointsMsg.pr.x = redCenter.x;       pointsMsg.pr.y = redCenter.y;
+        pointsMsg.pg.x = greenCenter.x;     pointsMsg.pg.y = greenCenter.y;
+        pointsMsg.pc.x = cyanCenter.x;      pointsMsg.pc.y = cyanCenter.y;
+        pointsMsg.pp.x = purpleCenter.x;    pointsMsg.pp.y = purpleCenter.y;
+        pointsMsg.features_found = foundRed && foundGreen && foundCyan && foundPurple;
     }
     
     bool getCenter(cv::Mat mask, cv::Point2d& point, double& radius)
