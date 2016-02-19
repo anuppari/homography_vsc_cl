@@ -166,15 +166,15 @@ public:
         
         // Construct message
         homography_vsc_cl::HomogDecompSolns msg;
-        msg.header.stamp = points->header.stamp;
+        msg.header.stamp = points.header.stamp;
         msg.newPixels = points;
         msg.refPixels = refPointsMsg;
-        msg.pose1.position.x = T[goodSolutionIndex[0]](0,0);
-        msg.pose1.position.y = T[goodSolutionIndex[0]](1,0);
-        msg.pose1.position.z = T[goodSolutionIndex[0]](2,0);
-        msg.pose2.position.x = T[goodSolutionIndex[1]](0,0);
-        msg.pose2.position.y = T[goodSolutionIndex[1]](1,0);
-        msg.pose2.position.z = T[goodSolutionIndex[1]](2,0);
+        msg.pose1.position.x = T[goodSolutionIndex[0]].at<double>(0,0);
+        msg.pose1.position.y = T[goodSolutionIndex[0]].at<double>(1,0);
+        msg.pose1.position.z = T[goodSolutionIndex[0]].at<double>(2,0);
+        msg.pose2.position.x = T[goodSolutionIndex[1]].at<double>(0,0);
+        msg.pose2.position.y = T[goodSolutionIndex[1]].at<double>(1,0);
+        msg.pose2.position.z = T[goodSolutionIndex[1]].at<double>(2,0);
         
     }
     
