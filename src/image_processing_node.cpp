@@ -3,6 +3,8 @@
 #include <image_transport/image_transport.h>
 #include <image_geometry/pinhole_camera_model.h>
 #include <sensor_msgs/Image.h>
+#include <sensor_msgs/CameraInfo.h>
+#include <homography_vsc_cl/ImagePoints.h>
 
 #include <string>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -40,6 +42,7 @@ public:
         
         // Get camera parameters
         std::cout << "Getting camera parameters on topic: "+cameraName+"/camera_info" << std::endl;
+        gotCamParam = false;
         camInfoSub = nh.subscribe(cameraName+"/camera_info",1,&ImageProcessing::camInfoCB,this);
         ROS_DEBUG("Waiting for camera parameters ...");
         do {
@@ -50,6 +53,7 @@ public:
         
         // Publisher and subscriber
         imagePub = it.advertise(cameraName+"/image_processed",1);
+        pixelPub = nh.advertise<homography_vsc_cl::ImagePoints>("markerPoints",1);
         imageSub = it.subscribe(cameraName+"/image_raw", 1, &ImageProcessing::imageCB,this);
     }
     
