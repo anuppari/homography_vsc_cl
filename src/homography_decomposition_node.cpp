@@ -215,6 +215,7 @@ public:
     }
     
 }; // end HomogDecomp class
+
 int main(int argc, char** argv)
 {
     ros::init(argc, argv, "image_processing_node");
