@@ -53,7 +53,8 @@ find_package(catkin REQUIRED COMPONENTS
 add_message_files(
   FILES
   ImagePoints.msg
-# )
+  HomogDecompSolns.msg
+)
 
 ## Generate services in the 'srv' folder
 add_service_files(
@@ -136,13 +137,20 @@ include_directories(
 
 ## Declare a C++ executable
 add_executable(image_processing_node src/image_processing_node.cpp)
+add_executable(homography_decomposition_node src/homography_decomposition_node.cpp)
 
 ## Add cmake target dependencies of the executable
 ## same as for the library above
 add_dependencies(image_processing_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(homography_decomposition_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(image_processing_node
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+
+target_link_libraries(homography_decomposition_node
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
 )

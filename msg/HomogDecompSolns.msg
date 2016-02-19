@@ -1,0 +1,12 @@
+Header header
+geometry_msgs/Pose pose1
+geometry_msgs/Pose pose2
+geometry_msgs/Vector3 n1
+geometry_msgs/Vector3 n2
+float64 alphar
+float64 alphag
+float64 alphac
+float64 alphap
+homography_vsc_cl/ImagePoints newPixels
+homography_vsc_cl/ImagePoints refPixels
+bool decomp_successful
