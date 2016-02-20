@@ -9,6 +9,7 @@ find_package(Eigen REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
+  tf
   cv_bridge
   image_transport
   image_geometry
@@ -140,11 +141,13 @@ include_directories(
 ## Declare a C++ executable
 add_executable(image_processing_node src/image_processing_node.cpp)
 add_executable(homography_decomposition_node src/homography_decomposition_node.cpp)
+add_executable(controller_node src/controller_node.cpp)
 
 ## Add cmake target dependencies of the executable
 ## same as for the library above
 add_dependencies(image_processing_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(homography_decomposition_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(controller_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(image_processing_node
@@ -153,6 +156,11 @@ target_link_libraries(image_processing_node
 )
 
 target_link_libraries(homography_decomposition_node
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+
+target_link_libraries(controller_node
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
 )

@@ -4,6 +4,7 @@
 #include <image_geometry/pinhole_camera_model.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
+#include <sensor_msgs/image_encodings.h>
 #include <homography_vsc_cl/ImagePoints.h>
 
 #include <string>
@@ -64,8 +65,8 @@ public:
         image_geometry::PinholeCameraModel cam_model;
         cam_model.fromCameraInfo(camInfoMsg);
         camMat = cv::Mat(cam_model.fullIntrinsicMatrix());
-        camMat.convertTo(camMat,CV_32FC1);
-        cam_model.distortionCoeffs().convertTo(distCoeffs,CV_32FC1);
+        camMat.convertTo(camMat,CV_64F);
+        cam_model.distortionCoeffs().convertTo(distCoeffs,CV_64F);
         
         //unregister subscriber
         camInfoSub.shutdown();
@@ -91,7 +92,7 @@ public:
         
         // basic processing
         cv::Mat imageHSV;
-        cv::undistort(image,image,camMat,distCoeffs);
+        cv::undistort(image.clone(),image,camMat,distCoeffs);
         cv::GaussianBlur(image,imageHSV,cv::Size(blurKernalSize,blurKernalSize),blurKernalSize,blurKernalSize);
         cv::cvtColor(imageHSV,imageHSV,CV_BGR2HSV);
         
@@ -142,6 +143,7 @@ public:
         pointsMsg.pc.x = cyanCenter.x;      pointsMsg.pc.y = cyanCenter.y;
         pointsMsg.pp.x = purpleCenter.x;    pointsMsg.pp.y = purpleCenter.y;
         pointsMsg.features_found = foundRed && foundGreen && foundCyan && foundPurple;
+        pixelPub.publish(pointsMsg);
     }
     
     bool getCenter(cv::Mat mask, cv::Point2d& point, double& radius)
@@ -159,7 +161,7 @@ public:
             {
                 cv::minEnclosingCircle(contours[ii], center[ii], radii[ii]);
             }
-            int index = std::distance(radii.begin(),std::max_element(radii.begin(),radii.end()))-1;
+            int index = std::distance(radii.begin(),std::max_element(radii.begin(),radii.end()));
             radius = radii[index];
             point = center[index];
             

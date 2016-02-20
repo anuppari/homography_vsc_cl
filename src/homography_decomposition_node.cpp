@@ -70,7 +70,7 @@ public:
         image_geometry::PinholeCameraModel cam_model;
         cam_model.fromCameraInfo(camInfoMsg);
         camMat = cv::Mat(cam_model.fullIntrinsicMatrix());
-        camMat.convertTo(camMat,CV_32FC1);
+        camMat.convertTo(camMat,CV_64F);
         
         //unregister subscriber
         camInfoSub.shutdown();
@@ -95,12 +95,13 @@ public:
         mRef.at<double>(3,0) = temp[3].x; mRef.at<double>(3,1) = temp[3].y; // purple
         
         // Reference points msg
-        refPointsMsg.header.stamp = ros::Time::now();
-        refPointsMsg.pr.x = temp[0].x; refPointsMsg.pr.y = temp[0].y; // red
-        refPointsMsg.pg.x = temp[1].x; refPointsMsg.pg.y = temp[1].y; // green
-        refPointsMsg.pc.x = temp[2].x; refPointsMsg.pc.y = temp[2].y; // cyan
-        refPointsMsg.pp.x = temp[3].x; refPointsMsg.pp.y = temp[3].y; // purple
-        refPointsMsg.features_found = true;
+        refPointsMsg = req.points;
+        //refPointsMsg.header.stamp = ros::Time::now();
+        //refPointsMsg.pr.x = temp[0].x; refPointsMsg.pr.y = temp[0].y; // red
+        //refPointsMsg.pg.x = temp[1].x; refPointsMsg.pg.y = temp[1].y; // green
+        //refPointsMsg.pc.x = temp[2].x; refPointsMsg.pc.y = temp[2].y; // cyan
+        //refPointsMsg.pp.x = temp[3].x; refPointsMsg.pp.y = temp[3].y; // purple
+        //refPointsMsg.features_found = true;
         
         referenceSet = true;
         
@@ -129,10 +130,6 @@ public:
             
             // Decompose
             std::vector<cv::Mat> R, T, n;
-            double alphaRed[4];
-            double alphaGreen[4];
-            double alphaCyan[4];
-            double alphaPurple[4];
             int successful_decomp = cv::decomposeHomographyMat(G,camMat,R,T,n);
             
             // Reduce to two solutions, and flip sign if necessary
@@ -146,12 +143,6 @@ public:
             std::vector<int> goodSolutionIndex;
             for (int ii = 0; ii < successful_decomp; ii++)
             {
-                // get alpha
-                alphaRed[ii] = m.at<double>(0,3)/(H.row(2).dot(mRef.row(0).t()));
-                alphaGreen[ii] = m.at<double>(1,3)/(H.row(2).dot(mRef.row(1).t()));
-                alphaCyan[ii] = m.at<double>(2,3)/(H.row(2).dot(mRef.row(2).t()));
-                alphaPurple[ii] = m.at<double>(3,3)/(H.row(2).dot(mRef.row(3).t()));
-                
                 // check if possible solution
                 if (!cv::countNonZero(m*R[ii]*n[ii] < 0))
                 {
@@ -163,9 +154,14 @@ public:
                 {
                     R[ii] = -1*R[ii];
                     T[ii] = -1*T[ii];
-                    alphaRed[ii] = -1*alphaRed[ii];
                 }
             }
+            
+            // Get alpha
+            double alphaRed = m.at<double>(0,2)/(H.row(2).dot(mRef.row(0)));
+            double alphaGreen = m.at<double>(1,2)/(H.row(2).dot(mRef.row(1)));
+            double alphaCyan = m.at<double>(2,2)/(H.row(2).dot(mRef.row(2)));
+            double alphaPurple = m.at<double>(3,2)/(H.row(2).dot(mRef.row(3)));
             
             // Construct message
             homography_vsc_cl::HomogDecompSolns msg;
@@ -192,6 +188,10 @@ public:
                 msg.pose1.orientation.y = q[0].y();
                 msg.pose1.orientation.z = q[0].z();
                 msg.pose1.orientation.w = q[0].w();
+                msg.alphar = alphaRed;
+                msg.alphag = alphaGreen;
+                msg.alphac = alphaCyan;
+                msg.alphap = alphaPurple;
                 
                 if (goodSolutionIndex.size() > 1)
                 {
@@ -218,7 +218,7 @@ public:
 
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "image_processing_node");
+    ros::init(argc, argv, "homography_decomposition_node");
     
     HomogDecomp obj;
     
