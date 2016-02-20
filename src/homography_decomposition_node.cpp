@@ -2,7 +2,7 @@
 #include <image_geometry/pinhole_camera_model.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <homography_vsc_cl/ImagePoints.h>
-#include <homography_vsc_cl/ReferencePoint.h>
+#include <homography_vsc_cl/SetReference.h>
 #include <homography_vsc_cl/HomogDecompSolns.h>
 
 #include <Eigen/Dense>
@@ -23,6 +23,7 @@ class HomogDecomp
     std::vector<cv::Point2d> refPoints;
     cv::Mat mRef;
     homography_vsc_cl::ImagePoints refPointsMsg;
+    homography_vsc_cl::ImagePoints lastPointsMsg;
     
     // Camera parameters
     cv::Mat camMat;
@@ -49,18 +50,12 @@ public:
         } while (!(ros::isShuttingDown()) and !gotCamParam);
         ROS_DEBUG("Got camera parameters");
         
-        // Start service for setting reference
-        service = nh.advertiseService("set_reference", &HomogDecomp::set_reference,this);
-        
-        // Wait for reference to be set
-        do {
-            ros::spinOnce();
-            ros::Duration(0.1).sleep();
-        } while (!(ros::isShuttingDown()) and !referenceSet);
-        
         // Solution publisher and Subscribe to image points
         solnPub = nh.advertise<homography_vsc_cl::HomogDecompSolns>("homogDecompSoln",10);
         imagePtsSub = nh.subscribe("markerPoints",1,&HomogDecomp::pointCB,this);
+        
+        // Start service for setting reference
+        service = nh.advertiseService("set_reference", &HomogDecomp::set_reference,this);
     }
     
     // callback for getting camera intrinsic parameters
@@ -77,13 +72,13 @@ public:
         gotCamParam = true;
     }
     
-    bool set_reference(homography_vsc_cl::ReferencePoint::Request &req, homography_vsc_cl::ReferencePoint::Response &resp)
+    bool set_reference(homography_vsc_cl::SetReference::Request &req, homography_vsc_cl::SetReference::Response &resp)
     {
         // pixels
-        refPoints.push_back(cv::Point2d(req.points.pr.x,req.points.pr.y));
-        refPoints.push_back(cv::Point2d(req.points.pg.x,req.points.pg.y));
-        refPoints.push_back(cv::Point2d(req.points.pc.x,req.points.pc.y));
-        refPoints.push_back(cv::Point2d(req.points.pp.x,req.points.pp.y));
+        refPoints.push_back(cv::Point2d(lastPointsMsg.pr.x,lastPointsMsg.pr.y));
+        refPoints.push_back(cv::Point2d(lastPointsMsg.pg.x,lastPointsMsg.pg.y));
+        refPoints.push_back(cv::Point2d(lastPointsMsg.pc.x,lastPointsMsg.pc.y));
+        refPoints.push_back(cv::Point2d(lastPointsMsg.pp.x,lastPointsMsg.pp.y));
         
         // normalized euclidean
         std::vector<cv::Point2d> temp;
@@ -95,7 +90,7 @@ public:
         mRef.at<double>(3,0) = temp[3].x; mRef.at<double>(3,1) = temp[3].y; // purple
         
         // Reference points msg
-        refPointsMsg = req.points;
+        refPointsMsg = lastPointsMsg;
         //refPointsMsg.header.stamp = ros::Time::now();
         //refPointsMsg.pr.x = temp[0].x; refPointsMsg.pr.y = temp[0].y; // red
         //refPointsMsg.pg.x = temp[1].x; refPointsMsg.pg.y = temp[1].y; // green
@@ -110,7 +105,7 @@ public:
     
     void pointCB(const homography_vsc_cl::ImagePoints& points)
     {
-        if (points.features_found)
+        if (referenceSet && points.features_found)
         {
             // get points
             std::vector<cv::Point2d> newPoints(4);
@@ -212,6 +207,7 @@ public:
             // publish
             solnPub.publish(msg);
         }
+        lastPointsMsg = points;
     }
     
 }; // end HomogDecomp class

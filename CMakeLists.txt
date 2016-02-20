@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   image_geometry
   sensor_msgs
   geometry_msgs
+  bebop_msgs
   message_generation
 )
 
@@ -61,7 +62,7 @@ add_message_files(
 ## Generate services in the 'srv' folder
 add_service_files(
   FILES
-  ReferencePoint.srv
+  SetReference.srv
 )
 
 ## Generate actions in the 'action' folder
@@ -76,6 +77,7 @@ generate_messages(
   DEPENDENCIES
   std_msgs  # Or other packages containing msgs
   geometry_msgs
+  bebop_msgs
 )
 
 ################################################
