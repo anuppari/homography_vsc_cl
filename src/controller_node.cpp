@@ -219,8 +219,8 @@ public:
             tfl.lookupTransform(imageTFframe,redTFframe,timeStamp,tfMarker2Im);
             //tfl.waitForTransform(imageTFframe+"_ref",redTFframe,timeStamp,ros::Duration(0.01));
             //tfl.lookupTransform(imageTFframe+"_ref",redTFframe,timeStamp,tfMarker2Ref);
-            tfl.waitForTransform(imageTFframe,imageTFframe+"_ref",timeStamp,ros::Duration(0.01));
-            tfl.lookupTransform(imageTFframe,imageTFframe+"_ref",timeStamp,tfIm2Ref);
+            tfl.waitForTransform(imageTFframe+"_ref",imageTFframe,timeStamp,ros::Duration(0.01));
+            tfl.lookupTransform(imageTFframe+"_ref",imageTFframe,timeStamp,tfIm2Ref);
             
         }
         catch(tf::TransformException ex)

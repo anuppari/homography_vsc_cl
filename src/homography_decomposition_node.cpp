@@ -4,6 +4,8 @@
 #include <homography_vsc_cl/ImagePoints.h>
 #include <homography_vsc_cl/SetReference.h>
 #include <homography_vsc_cl/HomogDecompSolns.h>
+#include <tf/transform_listener.h>
+#include <tf/transform_broadcaster.h>
 
 #include <Eigen/Dense>
 #include <opencv2/core/eigen.hpp>
@@ -17,6 +19,8 @@ class HomogDecomp
     ros::Subscriber imagePtsSub;
     ros::Subscriber camInfoSub;
     ros::Publisher solnPub;
+    tf::TransformListener tfl;
+    tf::TransformBroadcaster tfbr;
     
     // Parameters
     bool referenceSet;
@@ -24,6 +28,7 @@ class HomogDecomp
     cv::Mat mRef;
     homography_vsc_cl::ImagePoints refPointsMsg;
     homography_vsc_cl::ImagePoints lastPointsMsg;
+    std::string imageTFframe;
     
     // Camera parameters
     cv::Mat camMat;
@@ -36,6 +41,7 @@ public:
         ros::NodeHandle nhp("~"); // "private" nodehandle, used to access private parameters
         std::string cameraName;
         nhp.param<std::string>("cameraName", cameraName, "bebop");
+        nhp.param<std::string>("imageTFframe", imageTFframe, "bebop_image");
         
         referenceSet = false;
         
@@ -158,7 +164,7 @@ public:
             double alphaCyan = m.at<double>(2,2)/(H.row(2).dot(mRef.row(2)));
             double alphaPurple = m.at<double>(3,2)/(H.row(2).dot(mRef.row(3)));
             
-            // Construct message
+            // Construct output
             homography_vsc_cl::HomogDecompSolns msg;
             msg.header.stamp = points.header.stamp;
             
@@ -171,6 +177,26 @@ public:
                     Eigen::Matrix3d eigR;
                     cv::cv2eigen(R[goodSolutionIndex[ii]],eigR);
                     q[ii] = Eigen::Quaterniond(eigR);
+                }
+                
+                // publish tf
+                try
+                {
+                    tf::StampedTransform tfIm2Ref;
+                    tfl.waitForTransform(imageTFframe+"_ref",imageTFframe,msg.header.stamp,ros::Duration(0.01));
+                    tfl.lookupTransform(imageTFframe+"_ref",imageTFframe,msg.header.stamp,tfIm2Ref);
+                    for (int ii = 0; ii < goodSolutionIndex.size(); ii++)
+                    {
+                        Eigen::Quaterniond temp = q[ii].inverse();
+                        tfIm2Ref.setRotation(tf::Quaternion(temp.x(),temp.y(),temp.z(),temp.w()));
+                        char buff[1];
+                        sprintf(buff, "%d",ii);
+                        tfIm2Ref.child_frame_id_ = imageTFframe+"_soln_"+buff;
+                        tfbr.sendTransform(tfIm2Ref);
+                    }
+                }
+                catch(tf::TransformException ex)
+                {
                 }
                 
                 // Construct message
