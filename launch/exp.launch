@@ -1,11 +1,26 @@
 <launch>
-  <!-- bebop driver -->
+  <!-- bebop driver and gimbal publisher-->
+  <include file="$(find bebop_driver)/launch/bebop_node.launch"/>
+  <include file="$(find bebop_gimbal_tf)/launch/bebop_gimbal_tf.launch"/>
+  
+  <!-- Launch bebop to image frame tf publisher. Transform between mocap rigid body of bebop and actual image coordinate system -->
+  <node pkg="tf" type="static_transform_publisher" name="image_broadcaster" args="0.0804963 0.00679641 -0.0707853 -0.485019 0.483543 -0.51403 0.516018 bebop bebop_image 100" />
+  
+  <!-- mocap node -->
+  <include file="$(find mocap_optitrack)/launch/mocap.launch"/>
   
   <!-- joystick -->
+  <node pkg="joy" type="joy_node" name="joy_node">
+    <param name="dev" value="/dev/input/js1"/>
+  </node>
   
   <!-- image processing to find markers -->
+  <node pkg="homography_vsc_cl" type="image_processing_node" name="image_processing_node" output="screen" />
   
   <!-- Homography decomposition -->
+  <node pkg="homography_vsc_cl" type="homography_decomposition_node" name="homography_decomposition_node" output="screen" />
   
   <!-- controller -->
+  <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" />
+  
 </launch>
