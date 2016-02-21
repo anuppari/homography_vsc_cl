@@ -17,6 +17,7 @@ Eigen::Matrix<double,4,3> diffMat(const Eigen::Quaterniond);
 
 class Sim
 {
+    // ROS stuff
     ros::NodeHandle nh;
     ros::Subscriber velSubMocap;
     ros::Subscriber velSubHomog;
@@ -134,6 +135,9 @@ public:
         tfl.waitForTransform("world",cameraName+"_ref",event.current_real,ros::Duration(0.01));
         tfl.lookupTransform("world",cameraName+"_ref",event.current_real,tfRef);
         tf::Vector3 nStarVec = tfRef.getRotation()*tf::Vector3(0,0,-1);
+        homography_vsc_cl::HomogDecompSolns homogMsg;
+        homogMsg.header.stamp = ros::Time::now();
+        
     }
     
     void velPubCB(const ros::TimerEvent& event)

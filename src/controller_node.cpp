@@ -498,7 +498,7 @@ public:
                 zStar = tfMarker2Ref.getOrigin().getZ();
                 
                 // Get nStar
-                tf::Vector3 nStarVec = tfRef.getRotation()*tf::Vector3(0,0,-1);
+                tf::Vector3 nStarVec = tf::quatRotate(tfRef.getRotation(),tf::Vector3(0,0,-1));
                 nStar << nStarVec.getX(), nStarVec.getY(), nStarVec.getZ();
             }
             catch(tf::TransformException ex)
