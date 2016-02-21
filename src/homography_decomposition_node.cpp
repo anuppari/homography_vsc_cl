@@ -81,6 +81,7 @@ public:
     bool set_reference(homography_vsc_cl::SetReference::Request &req, homography_vsc_cl::SetReference::Response &resp)
     {
         // pixels
+        refPoints.clear();
         refPoints.push_back(cv::Point2d(lastPointsMsg.pr.x,lastPointsMsg.pr.y));
         refPoints.push_back(cv::Point2d(lastPointsMsg.pg.x,lastPointsMsg.pg.y));
         refPoints.push_back(cv::Point2d(lastPointsMsg.pc.x,lastPointsMsg.pc.y));

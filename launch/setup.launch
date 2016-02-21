@@ -9,6 +9,18 @@
   <!-- mocap node -->
   <include file="$(find mocap_optitrack)/launch/mocap.launch"/>
   
+  <!-- bebop velocity publisher -->
+  <node pkg="switch_vis_exp" type="filter_node" name="bebop_velocity_filter" ns="bebop_image" />
+  
+  <!-- Bebop image pose publisher (i.e. publish pose messages for the corresponding tf) -->
+  <node pkg="robot_pose_publisher" type="robot_pose_publisher" name="robot_pose_publisher" output="screen" >
+    <param name="map_frame" value="world" />
+    <param name="base_frame" value="bebop_image" />
+    <param name="publish_frequency" value="360.0" />
+    <param name="is_stamped" value="true" />
+    <remap from="robot_pose" to="bebop_image/pose" />
+  </node>
+  
   <!-- joystick -->
   <node pkg="joy" type="joy_node" name="joy_node">
     <param name="dev" value="/dev/input/js1"/>
@@ -21,6 +33,6 @@
   <node pkg="homography_vsc_cl" type="homography_decomposition_node" name="homography_decomposition_node" output="screen" />
   
   <!-- controller -->
-  <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" />
+  <!-- <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" /> -->
   
 </launch>

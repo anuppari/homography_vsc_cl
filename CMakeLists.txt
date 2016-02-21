@@ -57,6 +57,7 @@ add_message_files(
   FILES
   ImagePoints.msg
   HomogDecompSolns.msg
+  Output.msg
 )
 
 ## Generate services in the 'srv' folder
