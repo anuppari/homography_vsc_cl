@@ -314,8 +314,6 @@ public:
         // Parameter estimate
         double zhat = (forMocap ? zhatMocap : zhatHomog);
         
-        
-        
         // control
         Eigen::Vector3d wc = -Kw*Eigen::Vector3d(qTilde.vec()) + qTilde.inverse()*wcd; // qTilde.inverse()*wcd rotates wcd to current camera frame, equivalent to qTilde^-1*wcd*qTilde in paper
         Eigen::Vector3d phi = Lv*m1.cross(wc) - pedDot;

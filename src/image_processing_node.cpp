@@ -157,11 +157,15 @@ public:
         {
             std::vector<cv::Point2f> center(contours.size());
             std::vector<float> radii(contours.size());
+            std::vector<double> area(contours.size());
             for (int ii = 0; ii < contours.size(); ii++)
             {
+                cv::Moments moments = cv::moments(contours[ii],false);
                 cv::minEnclosingCircle(contours[ii], center[ii], radii[ii]);
+                center[ii] = cv::Point2d(moments.m10/moments.m00, moments.m01/moments.m00);
+                area[ii] = moments.m00;
             }
-            int index = std::distance(radii.begin(),std::max_element(radii.begin(),radii.end()));
+            int index = std::distance(area.begin(),std::max_element(area.begin(),area.end()));
             radius = radii[index];
             point = center[index];
             

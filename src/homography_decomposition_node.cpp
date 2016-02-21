@@ -10,6 +10,7 @@
 #include <Eigen/Dense>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/calib3d/calib3d.hpp>
+#include <math.h>
 
 class HomogDecomp
 {
@@ -146,7 +147,7 @@ public:
             for (int ii = 0; ii < successful_decomp; ii++)
             {
                 // check if possible solution
-                if (!cv::countNonZero(m*R[ii]*n[ii] < 0))
+                if (!cv::countNonZero(m*R[ii]*n[ii] < 0) && !std::isnan(n[ii].at<double>(2,0)))
                 {
                     goodSolutionIndex.push_back(ii);
                 }
@@ -210,6 +211,9 @@ public:
                 msg.pose1.orientation.y = q[0].y();
                 msg.pose1.orientation.z = q[0].z();
                 msg.pose1.orientation.w = q[0].w();
+                msg.n1.x = n[goodSolutionIndex[0]].at<double>(0,0);
+                msg.n1.y = n[goodSolutionIndex[0]].at<double>(1,0);
+                msg.n1.z = n[goodSolutionIndex[0]].at<double>(2,0);
                 msg.alphar = alphaRed;
                 msg.alphag = alphaGreen;
                 msg.alphac = alphaCyan;
@@ -224,6 +228,9 @@ public:
                     msg.pose2.orientation.y = q[1].y();
                     msg.pose2.orientation.z = q[1].z();
                     msg.pose2.orientation.w = q[1].w();
+                    msg.n2.x = n[goodSolutionIndex[1]].at<double>(0,0);
+                    msg.n2.y = n[goodSolutionIndex[1]].at<double>(1,0);
+                    msg.n2.z = n[goodSolutionIndex[1]].at<double>(2,0);
                 }
             }
             else
