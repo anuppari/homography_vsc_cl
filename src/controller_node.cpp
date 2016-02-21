@@ -496,6 +496,10 @@ public:
                 tfl.waitForTransform(imageTFframe,redTFframe,msg.header.stamp,ros::Duration(0.01));
                 tfl.lookupTransform(imageTFframe,redTFframe,msg.header.stamp,tfMarker2Ref);
                 zStar = tfMarker2Ref.getOrigin().getZ();
+                
+                // Get nStar
+                tf::Vector3 nStarVec = tfRef.getRotation()*tf::Vector3(0,0,-1);
+                nStar << nStarVec.getX(), nStarVec.getY(), nStarVec.getZ();
             }
             catch(tf::TransformException ex)
             {
