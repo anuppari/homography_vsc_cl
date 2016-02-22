@@ -4,8 +4,10 @@
 #include <sensor_msgs/Joy.h>
 #include <homography_vsc_cl/HomogDecompSolns.h>
 #include <homography_vsc_cl/Output.h>
+#include <homography_vsc_cl/Debug.h>
 #include <homography_vsc_cl/SetReference.h>
 #include <geometry_msgs/Twist.h>
+#include <geometry_msgs/TwistStamped.h>
 #include <tf/transform_listener.h>
 #include <tf/transform_broadcaster.h>
 #include <bebop_msgs/Ardrone3CameraStateOrientation.h>
@@ -30,6 +32,7 @@ class Controller
     ros::Publisher velPubHomog;
     ros::Publisher velPubMocap;
     ros::Publisher outputPub;
+    ros::Publisher debugPub;
     tf::TransformListener tfl;
     tf::TransformBroadcaster tfbr;
     ros::Timer mocapControlTimer;
@@ -66,6 +69,7 @@ class Controller
     // Homography buffers
     double zhatHomog;
     int homogBuffSize;
+    Eigen::Quaterniond qTildeLastHomog;
     Eigen::MatrixXd tBuffHomog;
     Eigen::MatrixXd evBuffHomog;
     Eigen::MatrixXd phiBuffHomog;
@@ -76,6 +80,7 @@ class Controller
     // Mocap buffers
     double zhatMocap;
     int mocapBuffSize;
+    Eigen::Quaterniond qTildeLastMocap;
     Eigen::MatrixXd tBuffMocap;
     Eigen::MatrixXd evBuffMocap;
     Eigen::MatrixXd phiBuffMocap;
@@ -110,17 +115,17 @@ public:
         nhp.param<std::string>("cameraName", cameraName, "bebop");
         nhp.param<std::string>("imageTFframe", imageTFframe, "bebop_image");
         nhp.param<std::string>("redTFframe", redTFframe, "ugv1");
-        nhp.param<double>("kv",kv,1.0);
-        nhp.param<double>("kw",kw,1.0);
-        nhp.param<double>("gamma1",gamma1,0.000001);
-        nhp.param<double>("gamma2",gamma2,20.0);
+        nhp.param<double>("kv",kv,5.0);
+        nhp.param<double>("kw",kw,5.0);
+        nhp.param<double>("gamma1",gamma1,0.00002);
+        nhp.param<double>("gamma2",gamma2,50.0);
         nhp.param<double>("intWindowTime",intWindowTime,1.0);
         nhp.param<int>("stackSize",stackSize,20);
-        nhp.param<double>("mocapUpdateRate",mocapUpdateRate,300.0);
-        nhp.param<double>("zhatUpdateRate",zhatUpdateRate,300.0);
-        nhp.param<double>("desUpdateRate",desUpdateRate,300.0);
+        nhp.param<double>("mocapUpdateRate",mocapUpdateRate,100.0);
+        nhp.param<double>("zhatUpdateRate",zhatUpdateRate,100.0);
+        nhp.param<double>("desUpdateRate",desUpdateRate,50.0);
         nhp.param<bool>("useActualVelocities",useActualVelocities,true);
-        nhp.param<double>("desRadius",desRadius,1.0);
+        nhp.param<double>("desRadius",desRadius,2.0);
         nhp.param<double>("desPeriod",desPeriod,45.0);
         nhp.param<double>("desHeight",desHeight,1.0);
         
@@ -139,7 +144,7 @@ public:
         Kv = kv*Eigen::Matrix3d::Identity();
         Kw = kw*Eigen::Matrix3d::Identity();
         zStar = 0;
-        zhatHomog = 0;
+        zhatHomog = 0.01;
         zhatMocap = zhatHomog;
         vcActual = Eigen::Vector3d::Zero();
         wcActual = Eigen::Vector3d::Zero();
@@ -151,6 +156,7 @@ public:
         velPubHomog = nh.advertise<geometry_msgs::Twist>("desVelHomog",10);
         velPubMocap = nh.advertise<geometry_msgs::Twist>("desVelMocap",10);
         outputPub = nh.advertise<homography_vsc_cl::Output>("controller_output",10);
+        debugPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug",10);
         
         // some subscribers
         actualVelSub = nh.subscribe(imageTFframe+"/body_vel",1,&Controller::actualVelCB,this);
@@ -252,6 +258,17 @@ public:
         // alpha
         double alpha1 = tfMarker2Ref.getOrigin().getZ()/tfMarker2Im.getOrigin().getZ();
         
+        //debug
+        homography_vsc_cl::Debug msg;
+        msg.header.stamp = ros::Time::now();
+        msg.mocapQuat.x = q.x();
+        msg.mocapQuat.y = q.y();
+        msg.mocapQuat.z = q.z();
+        msg.mocapQuat.w = q.w();
+        msg.alphaMocap = alpha1;
+        msg.zStar = zStar;
+        debugPub.publish(msg);
+        
         // Calculate control and publish
         calculateControl(pixels, q, alpha1, true);
     }
@@ -280,10 +297,17 @@ public:
             double term1 = gamma1*evBuffMocap.rightCols<1>().transpose()*phiBuffMocap.rightCols<1>();
             double term2 = gamma1*gamma2*(YstackMocap.cwiseProduct((-1*YstackMocap*zhatMocap - UstackMocap).eval()).sum());
             zhatDotMocap = term1 + term2;
+            //std::cout << "YstackMocap: \n" << YstackMocap << std::endl;
+            //std::cout << "UstackMocap: \n" << UstackMocap << std::endl;
+            //std::cout << "-1*YstackMocap*zhatMocap: \n" << -1*YstackMocap*zhatMocap << std::endl;
+            //std::cout << "((-1*YstackMocap*zhatMocap - UstackMocap).eval()): \n" << ((-1*YstackMocap*zhatMocap - UstackMocap).eval()) << std::endl;
+            //std::cout << "YstackMocap.cwiseProduct((-1*YstackMocap*zhatMocap - UstackMocap).eval()): \n" << YstackMocap.cwiseProduct((-1*YstackMocap*zhatMocap - UstackMocap).eval()) << std::endl;
+            //std::cout << "((-1*YstackMocap*zhatMocap - UstackMocap).eval()): \n" << ((-1*YstackMocap*zhatMocap - UstackMocap).eval()) << std::endl;
+            //std::cout << "term2: " << term2 << std::endl;
         }
         
         // Update
-        zhatHomog += zhatDotHomog*delT;
+        zhatHomog += zhatDotMocap*delT;
         zhatMocap += zhatDotMocap*delT;
         
         // Output
@@ -303,6 +327,12 @@ public:
         // errors
         Eigen::Vector3d ev = pe - ped;
         Eigen::Quaterniond qTilde = qd.inverse()*q;
+        
+        // maintain continuity of q
+        Eigen::Quaterniond qTildeLast = (forMocap ? qTildeLastMocap : qTildeLastHomog);
+        if ((qTildeLast.coeffs() - -1*qTilde.coeffs()).squaredNorm() < (qTildeLast.coeffs() - qTilde.coeffs()).squaredNorm()) { qTilde = Eigen::Quaterniond(-1*qTilde.coeffs()); }
+        if (forMocap) { qTildeLastMocap = qTilde; }
+        else { qTildeLastHomog = qTilde; }
         
         // Lv
         Eigen::Matrix3d camMatFactor = camMat;
@@ -371,10 +401,12 @@ public:
                 // Add data to stack
                 int index;
                 double minVal = YstackMocap.colwise().squaredNorm().minCoeff(&index);
+                //std::cout << "minVal: " << minVal << std::endl;
                 if (scriptY.squaredNorm() > minVal)
                 {
                     YstackMocap.col(index) = scriptY;
                     UstackMocap.col(index) = scriptU;
+                    //std::cout << "index: " << index << std::endl;
                 }
             }
             
