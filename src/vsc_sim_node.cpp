@@ -39,6 +39,7 @@ class Sim
     double startTime;
     bool useHomog;
     bool useMocap;
+    double lastTime;
     
     // States
     Eigen::Vector3d camPos;
@@ -70,7 +71,7 @@ public:
         useMocap = false;
         
         // Initialize Parameters
-        intTime = 1.0/100.0;
+        intTime = 1.0/300.0;
         startTime = ros::Time::now().toSec();
         
         // Initialize and Publish camera info
@@ -97,6 +98,7 @@ public:
     
     void integrateCB(const ros::TimerEvent& event)
     {
+        
         // Integrate camera pose
         camPos += camOrient*linVel*intTime; // convert from body to world and integrate
         Eigen::Vector4d camOrientTemp(camOrient.w(),camOrient.x(),camOrient.y(),camOrient.z());
@@ -105,20 +107,20 @@ public:
         camOrient.normalize();
         
         // Publish camera tf
-        tf::Transform tfMocap;
-        tfMocap.setOrigin(tf::Vector3(camPos(0),camPos(1),camPos(2)));
-        tfMocap.setRotation(tf::Quaternion(camOrient.x(),camOrient.y(),camOrient.z(),camOrient.w()));
-        tfbr.sendTransform(tf::StampedTransform(tfMocap,ros::Time::now(),"world",cameraName));
+        tf::Transform tfCam;
+        tfCam.setOrigin(tf::Vector3(camPos(0),camPos(1),camPos(2)));
+        tfCam.setRotation(tf::Quaternion(camOrient.x(),camOrient.y(),camOrient.z(),camOrient.w()));
+        tfbr.sendTransform(tf::StampedTransform(tfCam,event.current_real,"world",cameraName));
         
         // Publish red marker tf
         tf::Transform tfMarker;
         tfMarker.setOrigin(tf::Vector3(0.2,0.2,0));
         tfMarker.setRotation(tf::Quaternion(0,0,0,1));
-        tfbr.sendTransform(tf::StampedTransform(tfMarker,ros::Time::now(),"world","ugv1"));
+        tfbr.sendTransform(tf::StampedTransform(tfMarker,event.current_real+ros::Duration(0.01),"world","ugv1"));
         
         // publish velocity
         geometry_msgs::TwistStamped twistMsg;
-        twistMsg.header.stamp = ros::Time::now();
+        twistMsg.header.stamp = event.current_real;
         twistMsg.twist.linear.x = linVel.x();
         twistMsg.twist.linear.y = linVel.y();
         twistMsg.twist.linear.z = linVel.z();
@@ -129,34 +131,34 @@ public:
         
         try
         {
-            // homog solution
-            tf::StampedTransform tfIm2Ref;
-            tfl.waitForTransform(cameraName+"_ref",cameraName,event.current_real,ros::Duration(0.01));
-            tfl.lookupTransform(cameraName+"_ref",cameraName,event.current_real,tfIm2Ref);
             tf::StampedTransform tfRef;
-            tfl.waitForTransform("world",cameraName+"_ref",event.current_real,ros::Duration(0.01));
-            tfl.lookupTransform("world",cameraName+"_ref",event.current_real,tfRef);
+            tfl.waitForTransform("world",cameraName+"_ref",ros::Time(0),ros::Duration(0.01));
+            tfl.lookupTransform("world",cameraName+"_ref",ros::Time(0),tfRef);
             tf::Vector3 nStarVec = tf::quatRotate(tfRef.getRotation(),tf::Vector3(0,0,-1));
-            tf::StampedTransform tfMarker2Im;
-            tfl.waitForTransform(cameraName,"ugv1",event.current_real,ros::Duration(0.01));
-            tfl.lookupTransform(cameraName,"ugv1",event.current_real,tfMarker2Im);
+            
+            tf::Transform tfIm2Ref = tfRef.inverse()*tfCam;
+            tf::Transform tfMarker2Im = tfCam.inverse()*tfMarker;
             tf::Transform tfMarker2Ref = tfIm2Ref*tfMarker2Im;
+            
             cv::Mat m1(cv::Size(1,3),CV_64FC1);
-            m1.at<double>(0,0) = tfMarker2Im.getOrigin().getX()/tfMarker2Im.getOrigin().getZ();
-            m1.at<double>(1,0) = tfMarker2Im.getOrigin().getY()/tfMarker2Im.getOrigin().getZ();
+            tf::Vector3 marker2ImT = tfMarker2Im.getOrigin();
+            m1.at<double>(0,0) = marker2ImT.getX()/marker2ImT.getZ();
+            m1.at<double>(1,0) = marker2ImT.getY()/marker2ImT.getZ();
             m1.at<double>(2,0) = 1;
             cv::Mat pixels = camMat*m1;
+            tf::Vector3 ref2ImT = -1*tfIm2Ref.getOrigin();
+            tf::Quaternion ref2ImQ = tfIm2Ref.getRotation().inverse();
             
             // Construct homog message and publish
             homography_vsc_cl::HomogDecompSolns homogMsg;
             homogMsg.header.stamp = ros::Time::now();
-            homogMsg.pose1.position.x = tfIm2Ref.getOrigin().getX();
-            homogMsg.pose1.position.y = tfIm2Ref.getOrigin().getY();
-            homogMsg.pose1.position.z = tfIm2Ref.getOrigin().getZ();
-            homogMsg.pose1.orientation.x = tfIm2Ref.getRotation().getX();
-            homogMsg.pose1.orientation.y = tfIm2Ref.getRotation().getY();
-            homogMsg.pose1.orientation.z = tfIm2Ref.getRotation().getZ();
-            homogMsg.pose1.orientation.w = tfIm2Ref.getRotation().getW();
+            homogMsg.pose1.position.x = ref2ImT.getX();
+            homogMsg.pose1.position.y = ref2ImT.getY();
+            homogMsg.pose1.position.z = ref2ImT.getZ();
+            homogMsg.pose1.orientation.x = ref2ImQ.getX();
+            homogMsg.pose1.orientation.y = ref2ImQ.getY();
+            homogMsg.pose1.orientation.z = ref2ImQ.getZ();
+            homogMsg.pose1.orientation.w = ref2ImQ.getW();
             homogMsg.n1.x = nStarVec.getX();
             homogMsg.n1.y = nStarVec.getY();
             homogMsg.n1.z = nStarVec.getZ();
@@ -215,9 +217,19 @@ public:
         {
             useHomog = false;
             useMocap = false;
-            linVel = 3*Eigen::Vector3d(-1*joyMsg->axes[0], -1*joyMsg->axes[1], joyMsg->axes[7]);
-            angVel = 2*Eigen::Vector3d(-1*joyMsg->axes[4], joyMsg->axes[3], joyMsg->axes[2]-joyMsg->axes[5]);
+            linVel = 3*Eigen::Vector3d(-1*joy_deadband(joyMsg->axes[0]), joy_deadband(-1*joyMsg->axes[1]), joy_deadband(joyMsg->axes[7]));
+            angVel = 2*Eigen::Vector3d(-1*joy_deadband(joyMsg->axes[4]), joy_deadband(joyMsg->axes[3]), joy_deadband(joyMsg->axes[2]-joyMsg->axes[5]));
         }
+    }
+    
+    double joy_deadband(double input_value)
+    {
+        double filtered_value = 0;
+        if (std::abs(input_value) > 0.15)
+        {
+            filtered_value = input_value;
+        }
+        return filtered_value;
     }
 }; // End Sim class
 

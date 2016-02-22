@@ -45,7 +45,8 @@ class Controller
     bool gotCamParam;
     
     // Controller parameters
-    double kv;
+    double kvXY;
+    double kvZ;
     double kw;
     double gamma1;
     double gamma2;
@@ -63,6 +64,7 @@ class Controller
     double zStar;
     
     // Mocap based control parameters
+    std::string cameraName;
     std::string imageTFframe;
     std::string redTFframe;
     
@@ -111,19 +113,20 @@ public:
     {
         // Parameters
         ros::NodeHandle nhp("~"); // "private" nodehandle, used to access private parameters
-        std::string cameraName;
+        //std::string cameraName;
         nhp.param<std::string>("cameraName", cameraName, "bebop");
         nhp.param<std::string>("imageTFframe", imageTFframe, "bebop_image");
         nhp.param<std::string>("redTFframe", redTFframe, "ugv1");
-        nhp.param<double>("kv",kv,5.0);
+        nhp.param<double>("kvXY",kvXY,5.0);
+        nhp.param<double>("kvZ",kvZ,5.0);
         nhp.param<double>("kw",kw,5.0);
-        nhp.param<double>("gamma1",gamma1,0.00002);
+        nhp.param<double>("gamma1",gamma1,0.002);
         nhp.param<double>("gamma2",gamma2,50.0);
         nhp.param<double>("intWindowTime",intWindowTime,1.0);
         nhp.param<int>("stackSize",stackSize,20);
-        nhp.param<double>("mocapUpdateRate",mocapUpdateRate,100.0);
-        nhp.param<double>("zhatUpdateRate",zhatUpdateRate,100.0);
-        nhp.param<double>("desUpdateRate",desUpdateRate,50.0);
+        nhp.param<double>("mocapUpdateRate",mocapUpdateRate,300.0);
+        nhp.param<double>("zhatUpdateRate",zhatUpdateRate,500.0);
+        nhp.param<double>("desUpdateRate",desUpdateRate,100.0);
         nhp.param<bool>("useActualVelocities",useActualVelocities,true);
         nhp.param<double>("desRadius",desRadius,2.0);
         nhp.param<double>("desPeriod",desPeriod,45.0);
@@ -141,7 +144,7 @@ public:
         ROS_DEBUG("Got camera parameters");
         
         // Initialize other parameters
-        Kv = kv*Eigen::Matrix3d::Identity();
+        Kv = (Eigen::Vector3d(kvXY, kvXY, kvZ)).asDiagonal();
         Kw = kw*Eigen::Matrix3d::Identity();
         zStar = 0;
         zhatHomog = 0.01;
@@ -187,8 +190,40 @@ public:
         desLastTime = ros::Time::now().toSec();
         zLastTime = desLastTime;
         
-        // Initialize desired
-        desCamPos << -1*desRadius, 0, desHeight;
+        // initialize desired
+        double desOrig[2] = {0.0,0.0};
+        bool desiredSet = false;
+        while (!desiredSet)
+        {
+            desOrig[0] = 0.0;
+            desOrig[1] = 0.0;
+            try
+            {
+                tf::StampedTransform turtleWrtWorldTemp;
+                tfl.waitForTransform("world", "ugv1", ros::Time(0), ros::Duration(0.1));
+                tfl.lookupTransform("world", "ugv1", ros::Time(0), turtleWrtWorldTemp);
+                desOrig[0] = desOrig[0] + turtleWrtWorldTemp.getOrigin().getX();
+                desOrig[1] = desOrig[1] + turtleWrtWorldTemp.getOrigin().getY();
+                tfl.waitForTransform("world", "ugv2", ros::Time(0), ros::Duration(0.1));
+                tfl.lookupTransform("world", "ugv2", ros::Time(0), turtleWrtWorldTemp);
+                desOrig[0] = desOrig[0] + turtleWrtWorldTemp.getOrigin().getX();
+                desOrig[1] = desOrig[1] + turtleWrtWorldTemp.getOrigin().getY();
+                tfl.waitForTransform("world", "ugv3", ros::Time(0), ros::Duration(0.1));
+                tfl.lookupTransform("world", "ugv3", ros::Time(0), turtleWrtWorldTemp);
+                desOrig[0] = desOrig[0] + turtleWrtWorldTemp.getOrigin().getX();
+                desOrig[1] = desOrig[1] + turtleWrtWorldTemp.getOrigin().getY();
+                tfl.waitForTransform("world", "ugv4", ros::Time(0), ros::Duration(0.1));
+                tfl.lookupTransform("world", "ugv4", ros::Time(0), turtleWrtWorldTemp);
+                desOrig[0] = desOrig[0] + turtleWrtWorldTemp.getOrigin().getX();
+                desOrig[1] = desOrig[1] + turtleWrtWorldTemp.getOrigin().getY();
+                desiredSet = true;
+            }
+            catch (tf::TransformException ex)
+            {
+                std::cout << "failed to set desired" << std::endl;
+            }
+        }
+        desCamPos << -1*desRadius + desOrig[0]/4.0, desOrig[1]/4.0, desHeight;
         Eigen::Matrix3d tempRot; 
         tempRot << 0,0,1,-1,0,0,0,-1,0;
         qPanTilt.setIdentity();
@@ -227,20 +262,20 @@ public:
         
         // Calculate control and publish
         calculateControl(pixels, q, alpha1, false);
+        
     }
     
     void mocapCB(const ros::TimerEvent& event)
     {
         // Red marker w.r.t. image, and reference w.r.t. image
-        ros::Time timeStamp = ros::Time::now();
         tf::StampedTransform tfMarker2Im;
         tf::StampedTransform tfIm2Ref;
         try
         {
-            tfl.waitForTransform(imageTFframe,redTFframe,timeStamp,ros::Duration(0.01));
-            tfl.lookupTransform(imageTFframe,redTFframe,timeStamp,tfMarker2Im);
-            tfl.waitForTransform(imageTFframe+"_ref",imageTFframe,timeStamp,ros::Duration(0.01));
-            tfl.lookupTransform(imageTFframe+"_ref",imageTFframe,timeStamp,tfIm2Ref);
+            tfl.waitForTransform(imageTFframe,redTFframe,ros::Time(0),ros::Duration(0.01));
+            tfl.lookupTransform(imageTFframe,redTFframe,ros::Time(0),tfMarker2Im);
+            tfl.waitForTransform(imageTFframe+"_ref",imageTFframe,ros::Time(0),ros::Duration(0.01));
+            tfl.lookupTransform(imageTFframe+"_ref",imageTFframe,ros::Time(0),tfIm2Ref);
         }
         catch(tf::TransformException ex)
         {
@@ -261,12 +296,14 @@ public:
         //debug
         homography_vsc_cl::Debug msg;
         msg.header.stamp = ros::Time::now();
-        msg.mocapQuat.x = q.x();
-        msg.mocapQuat.y = q.y();
-        msg.mocapQuat.z = q.z();
-        msg.mocapQuat.w = q.w();
-        msg.alphaMocap = alpha1;
+        msg.q.x = q.x();
+        msg.q.y = q.y();
+        msg.q.z = q.z();
+        msg.q.w = q.w();
+        msg.alpha = alpha1;
         msg.zStar = zStar;
+        msg.newPixels.pr.x = pixels.x();
+        msg.newPixels.pr.y = pixels.y();
         debugPub.publish(msg);
         
         // Calculate control and publish
@@ -280,6 +317,8 @@ public:
         double timeNow = timestamp.toSec();
         double delT = timeNow - zLastTime;
         zLastTime = timeNow;
+        
+        //std::cout << delT << std::endl;
         
         // homography
         double zhatDotHomog = 0;
@@ -315,6 +354,8 @@ public:
         outputMsg.header.stamp = timestamp;
         outputMsg.zTildeHomog = zStar - zhatHomog;
         outputMsg.zTildeMocap = zStar - zhatMocap;
+        outputMsg.zTildePercentHomog = (zStar - zhatHomog)/zStar;
+        outputMsg.zTildePercentMocap = (zStar - zhatMocap)/zStar;
         outputPub.publish(outputMsg);
     }
     
@@ -349,10 +390,17 @@ public:
         Eigen::Vector3d phi = Lv*m1.cross(wc) - pedDot;
         Eigen::Vector3d vc = (1.0/alpha1)*Lv.inverse()*(Kv*ev + phi*zhat);
         
+        tf::StampedTransform tfCamera2Body;
+        tfl.waitForTransform(cameraName,imageTFframe,ros::Time(0),ros::Duration(0.01));
+        tfl.lookupTransform(cameraName,imageTFframe,ros::Time(0),tfCamera2Body);
+        Eigen::Quaterniond qCamera2Body(tfCamera2Body.getRotation().getW(),tfCamera2Body.getRotation().getX(),tfCamera2Body.getRotation().getY(),tfCamera2Body.getRotation().getZ());
+        Eigen::Vector3d vcBody = qCamera2Body*vc;
+        Eigen::Vector3d wcBody = qCamera2Body*wc;
+        
         // Construct message
         geometry_msgs::Twist twistMsg;
-        twistMsg.linear.x = vc(0);  twistMsg.linear.y = vc(1);  twistMsg.linear.z = vc(2);
-        twistMsg.angular.x = wc(0); twistMsg.angular.y = wc(1); twistMsg.angular.z = wc(2);
+        twistMsg.linear.x = vcBody(0);  twistMsg.linear.y = vcBody(1);  twistMsg.linear.z = vcBody(2);
+        twistMsg.angular.x = wcBody(0); twistMsg.angular.y = wcBody(1); twistMsg.angular.z = wcBody(2);
         
         // Get velocity data for learning from mocap
         Eigen::Vector3d phi2;
@@ -481,12 +529,13 @@ public:
         // Calculate extra signals
         tf::StampedTransform tfDes2Ref;
         tf::StampedTransform tfMarker2Des;
+        
         try
         {
-            tfl.waitForTransform(imageTFframe+"_ref",imageTFframe+"_des",timestamp,ros::Duration(0.01));
-            tfl.lookupTransform(imageTFframe+"_ref",imageTFframe+"_des",timestamp,tfDes2Ref);
-            tfl.waitForTransform(imageTFframe+"_des",redTFframe,timestamp,ros::Duration(0.01));
-            tfl.lookupTransform(imageTFframe+"_des",redTFframe,timestamp,tfMarker2Des);
+            tfl.waitForTransform(imageTFframe+"_ref",imageTFframe+"_des",ros::Time(0),ros::Duration(0.01));
+            tfl.lookupTransform(imageTFframe+"_ref",imageTFframe+"_des",ros::Time(0),tfDes2Ref);
+            tfl.waitForTransform(imageTFframe+"_des",redTFframe,ros::Time(0),ros::Duration(0.01));
+            tfl.lookupTransform(imageTFframe+"_des",redTFframe,ros::Time(0),tfMarker2Des);
         }
         catch(tf::TransformException ex)
         {
@@ -518,15 +567,15 @@ public:
             try
             {
                 // Get reference pose
-                tfl.waitForTransform("world",imageTFframe,msg.header.stamp,ros::Duration(0.01));
-                tfl.lookupTransform("world",imageTFframe,msg.header.stamp,tfRef);
+                tfl.waitForTransform("world",imageTFframe,ros::Time(0),ros::Duration(0.01));
+                tfl.lookupTransform("world",imageTFframe,ros::Time(0),tfRef);
                 tfRef.child_frame_id_ = imageTFframe+"_ref";
                 refPubCB(ros::TimerEvent());
                 
                 // Get zStar
                 tf::StampedTransform tfMarker2Ref;
-                tfl.waitForTransform(imageTFframe,redTFframe,msg.header.stamp,ros::Duration(0.01));
-                tfl.lookupTransform(imageTFframe,redTFframe,msg.header.stamp,tfMarker2Ref);
+                tfl.waitForTransform(imageTFframe,redTFframe,ros::Time(0),ros::Duration(0.01));
+                tfl.lookupTransform(imageTFframe,redTFframe,ros::Time(0),tfMarker2Ref);
                 zStar = tfMarker2Ref.getOrigin().getZ();
                 
                 // Get nStar
@@ -549,7 +598,7 @@ public:
     
     void refPubCB(const ros::TimerEvent& event)
     {
-        tfRef.stamp_ = ros::Time::now() + ros::Duration(0.1);
+        tfRef.stamp_ = ros::Time::now() + ros::Duration(0.01);
         tfbr.sendTransform(tfRef);
     }
     

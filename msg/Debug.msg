@@ -1,5 +1,5 @@
 Header header
-geometry_msgs/Quaternion mocapQuat
-geometry_msgs/Quaternion homogQuat
-float64 alphaMocap
+geometry_msgs/Quaternion q
+float64 alpha
+homography_vsc_cl/ImagePoints newPixels
 float64 zStar

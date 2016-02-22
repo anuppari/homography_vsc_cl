@@ -35,4 +35,8 @@
   <!-- controller -->
   <!-- <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" /> -->
   
+   <!-- joystick control node -->
+  <node pkg="homography_vsc_cl" type="joy_stick_arbiter" name="joy_stick_arbiter" output="screen">
+  </node>  
+  
 </launch>

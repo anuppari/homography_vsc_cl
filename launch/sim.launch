@@ -1,0 +1,13 @@
+<launch>
+  <!-- joystick -->
+  <node pkg="joy" type="joy_node" name="joy_node">
+    <param name="dev" value="/dev/input/js1"/>
+  </node>
+  
+  <!-- sim -->
+  <node pkg="homography_vsc_cl" type="sim_node" name="sim_node" output="screen" />
+  
+  <!-- controller -->
+  <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" />
+  
+</launch>

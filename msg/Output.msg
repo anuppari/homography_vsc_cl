@@ -1,3 +1,5 @@
 Header header
 float64 zTildeHomog
 float64 zTildeMocap
+float64 zTildePercentHomog
+float64 zTildePercentMocap
