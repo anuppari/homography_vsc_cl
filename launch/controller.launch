@@ -1,8 +1,8 @@
 <launch>
   <!-- controller -->
   <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" >
-    <param name="kvXY" value="3.0" />
-    <param name="kvZ" value="1.0" />
+    <param name="kvXY" value="0.5" />
+    <param name="kvZ" value="0.7" />
     <param name="kw" value="0.7" />
     <param name="gamma1" value="0.00001" />
     <param name="gamma2" value="1.0" />

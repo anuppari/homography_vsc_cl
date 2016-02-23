@@ -113,135 +113,162 @@ public:
     
     void pointCB(const homography_vsc_cl::ImagePoints& points)
     {
-        if (referenceSet && points.features_found)
+        try
         {
-            // get points
-            std::vector<cv::Point2d> newPoints(4);
-            newPoints[0] = cv::Point2d(points.pr.x,points.pr.y);
-            newPoints[1] = cv::Point2d(points.pg.x,points.pg.y);
-            newPoints[2] = cv::Point2d(points.pc.x,points.pc.y);
-            newPoints[3] = cv::Point2d(points.pp.x,points.pp.y);
-            
-            // Calculate homography
-            cv::Mat G = cv::findHomography(refPoints,newPoints,0);
-            cv::Mat H_hat = (camMat.inv(cv::DECOMP_LU)*G)*camMat;
-            cv::SVD svd = cv::SVD(H_hat,cv::SVD::NO_UV);
-            double svds[3] = {svd.w.at<double>(0,0), svd.w.at<double>(1,0), svd.w.at<double>(2,0)};
-            std::sort(svds,svds+3);
-            double gamma = svds[1];
-            cv::Mat H = (1.0/gamma)*H_hat;
-            
-            // Decompose
-            std::vector<cv::Mat> R, T, n;
-            int successful_decomp = cv::decomposeHomographyMat(G,camMat,R,T,n);
-            
-            // Reduce to two solutions, and flip sign if necessary
-            std::vector<cv::Point2d> temp;
-            cv::undistortPoints(newPoints,temp,camMat,cv::Mat());
-            cv::Mat m = cv::Mat::ones(4,3,CV_64F);
-            m.at<double>(0,0) = temp[0].x; m.at<double>(0,1) = temp[0].y; // red
-            m.at<double>(1,0) = temp[1].x; m.at<double>(1,1) = temp[1].y; // green
-            m.at<double>(2,0) = temp[2].x; m.at<double>(2,1) = temp[2].y; // cyan
-            m.at<double>(3,0) = temp[3].x; m.at<double>(3,1) = temp[3].y; // purple
-            std::vector<int> goodSolutionIndex;
-            for (int ii = 0; ii < successful_decomp; ii++)
+            if (referenceSet && points.features_found)
             {
-                // check if possible solution
-                if (!cv::countNonZero(m*R[ii]*n[ii] < 0) && !std::isnan(n[ii].at<double>(2,0)))
-                {
-                    goodSolutionIndex.push_back(ii);
-                }
+                // get points
+                std::vector<cv::Point2d> newPoints(4);
+                newPoints[0] = cv::Point2d(points.pr.x,points.pr.y);
+                newPoints[1] = cv::Point2d(points.pg.x,points.pg.y);
+                newPoints[2] = cv::Point2d(points.pc.x,points.pc.y);
+                newPoints[3] = cv::Point2d(points.pp.x,points.pp.y);
                 
-                // check if rotation is improper
-                if (cv::determinant(R[ii]) < 0)
-                {
-                    R[ii] = -1*R[ii];
-                    T[ii] = -1*T[ii];
-                }
-            }
-            
-            // Get alpha
-            double alphaRed = m.at<double>(0,2)/(H.row(2).dot(mRef.row(0)));
-            double alphaGreen = m.at<double>(1,2)/(H.row(2).dot(mRef.row(1)));
-            double alphaCyan = m.at<double>(2,2)/(H.row(2).dot(mRef.row(2)));
-            double alphaPurple = m.at<double>(3,2)/(H.row(2).dot(mRef.row(3)));
-            
-            // Construct output
-            homography_vsc_cl::HomogDecompSolns msg;
-            msg.header.stamp = points.header.stamp;
-            
-            if (goodSolutionIndex.size() > 0)
-            {
-                // Convert rotation matrix to quaternion
-                std::vector<Eigen::Quaterniond> q(goodSolutionIndex.size());
-                for (int ii = 0; ii < goodSolutionIndex.size(); ii++)
-                {
-                    Eigen::Matrix3d eigR;
-                    cv::cv2eigen(R[goodSolutionIndex[ii]],eigR);
-                    q[ii] = Eigen::Quaterniond(eigR);
-                }
+                // Calculate homography
+                cv::Mat G = cv::findHomography(refPoints,newPoints,0);
+                cv::Mat H_hat = (camMat.inv(cv::DECOMP_LU)*G)*camMat;
+                cv::SVD svd = cv::SVD(H_hat,cv::SVD::NO_UV);
+                double svds[3] = {svd.w.at<double>(0,0), svd.w.at<double>(1,0), svd.w.at<double>(2,0)};
+                std::sort(svds,svds+3);
+                double gamma = svds[1];
+                cv::Mat H = (1.0/gamma)*H_hat;
                 
-                // publish tf
-                try
+                // Decompose
+                std::vector<cv::Mat> R, T, n;
+                int successful_decomp = cv::decomposeHomographyMat(G,camMat,R,T,n);
+                
+                // Reduce to two solutions, and flip sign if necessary
+                std::vector<cv::Point2d> temp;
+                cv::undistortPoints(newPoints,temp,camMat,cv::Mat());
+                cv::Mat m = cv::Mat::ones(4,3,CV_64F);
+                m.at<double>(0,0) = temp[0].x; m.at<double>(0,1) = temp[0].y; // red
+                m.at<double>(1,0) = temp[1].x; m.at<double>(1,1) = temp[1].y; // green
+                m.at<double>(2,0) = temp[2].x; m.at<double>(2,1) = temp[2].y; // cyan
+                m.at<double>(3,0) = temp[3].x; m.at<double>(3,1) = temp[3].y; // purple
+                std::vector<int> goodSolutionIndex;
+                
+                for (int ii = 0; ii < successful_decomp; ii++)
                 {
-                    tf::StampedTransform tfIm2Ref;
-                    tfl.waitForTransform(imageTFframe+"_ref",imageTFframe,msg.header.stamp,ros::Duration(0.01));
-                    tfl.lookupTransform(imageTFframe+"_ref",imageTFframe,msg.header.stamp,tfIm2Ref);
-                    for (int ii = 0; ii < goodSolutionIndex.size(); ii++)
+                    
+                    // check if any element of the solution is nan or inf
+                    bool solPass = true;
+                    for (int jj = 0; jj < 9;jj++)
                     {
-                        Eigen::Quaterniond temp = q[ii].inverse();
-                        tfIm2Ref.setRotation(tf::Quaternion(temp.x(),temp.y(),temp.z(),temp.w()));
-                        char buff[1];
-                        sprintf(buff, "%d",ii);
-                        tfIm2Ref.child_frame_id_ = imageTFframe+"_soln_"+buff;
-                        tfbr.sendTransform(tfIm2Ref);
+                        if (std::isnan(R.at(ii).at<double>(jj/3,jj%3)) || std::isinf(R.at(ii).at<double>(jj/3,jj%3))) { solPass = false; }
+                    }
+                    for (int jj = 0; jj < 3;jj++)
+                    {
+                        if (std::isnan(T.at(ii).at<double>(jj,0)) || std::isinf(T.at(ii).at<double>(jj,0))) { solPass = false; }
+                        if (std::isnan(n.at(ii).at<double>(jj,0)) || std::isinf(n.at(ii).at<double>(jj,0))) { solPass = false; }
+                    }
+                    
+                    // check if possible solution
+                    if (!cv::countNonZero(m*R[ii]*n[ii] < 0) && solPass)
+                    {
+                        goodSolutionIndex.push_back(ii);
+                        
+                        // check if rotation is improper
+                        if (cv::determinant(R[ii]) < 0)
+                        {
+                            R[ii] = -1*R[ii];
+                            T[ii] = -1*T[ii];
+                        }
                     }
                 }
-                catch(tf::TransformException ex)
+                
+                // Get alpha
+                double alphaRed = m.at<double>(0,2)/(H.row(2).dot(mRef.row(0)));
+                double alphaGreen = m.at<double>(1,2)/(H.row(2).dot(mRef.row(1)));
+                double alphaCyan = m.at<double>(2,2)/(H.row(2).dot(mRef.row(2)));
+                double alphaPurple = m.at<double>(3,2)/(H.row(2).dot(mRef.row(3)));
+                
+                // Construct output
+                homography_vsc_cl::HomogDecompSolns msg;
+                msg.header.stamp = points.header.stamp;
+                
+                if (goodSolutionIndex.size() > 0)
                 {
+                    // Convert rotation matrix to quaternion
+                    std::vector<Eigen::Quaterniond> q(goodSolutionIndex.size());
+                    for (int ii = 0; ii < goodSolutionIndex.size(); ii++)
+                    {
+                        Eigen::Matrix3d eigR;
+                        cv::cv2eigen(R[goodSolutionIndex[ii]],eigR);
+                        q[ii] = Eigen::Quaterniond(eigR);
+                    }
+                    
+                    // publish tf
+                    try
+                    {
+                        tf::StampedTransform tfIm2Ref;
+                        tfl.waitForTransform(imageTFframe+"_ref",imageTFframe,msg.header.stamp,ros::Duration(0.01));
+                        tfl.lookupTransform(imageTFframe+"_ref",imageTFframe,msg.header.stamp,tfIm2Ref);
+                        for (int ii = 0; ii < goodSolutionIndex.size(); ii++)
+                        {
+                            Eigen::Quaterniond temp = q[ii].inverse();
+                            tfIm2Ref.setRotation(tf::Quaternion(temp.x(),temp.y(),temp.z(),temp.w()));
+                            char buff[1];
+                            sprintf(buff, "%d",ii);
+                            tfIm2Ref.child_frame_id_ = imageTFframe+"_soln_"+buff;
+                            tfbr.sendTransform(tfIm2Ref);
+                        }
+                    }
+                    catch(tf::TransformException ex)
+                    {
+                    }
+                    
+                    // Construct message
+                    msg.newPixels = points;
+                    msg.refPixels = refPointsMsg;
+                    msg.pose1.position.x = T[goodSolutionIndex[0]].at<double>(0,0);
+                    msg.pose1.position.y = T[goodSolutionIndex[0]].at<double>(1,0);
+                    msg.pose1.position.z = T[goodSolutionIndex[0]].at<double>(2,0);
+                    msg.pose1.orientation.x = q[0].x();
+                    msg.pose1.orientation.y = q[0].y();
+                    msg.pose1.orientation.z = q[0].z();
+                    msg.pose1.orientation.w = q[0].w();
+                    msg.n1.x = n[goodSolutionIndex[0]].at<double>(0,0);
+                    msg.n1.y = n[goodSolutionIndex[0]].at<double>(1,0);
+                    msg.n1.z = n[goodSolutionIndex[0]].at<double>(2,0);
+                    msg.alphar = alphaRed;
+                    msg.alphag = alphaGreen;
+                    msg.alphac = alphaCyan;
+                    msg.alphap = alphaPurple;
+                    msg.decomp_successful = true;
+                    if (goodSolutionIndex.size() > 1)
+                    {
+                        msg.pose2.position.x = T[goodSolutionIndex[1]].at<double>(0,0);
+                        msg.pose2.position.y = T[goodSolutionIndex[1]].at<double>(1,0);
+                        msg.pose2.position.z = T[goodSolutionIndex[1]].at<double>(2,0);
+                        msg.pose2.orientation.x = q[1].x();
+                        msg.pose2.orientation.y = q[1].y();
+                        msg.pose2.orientation.z = q[1].z();
+                        msg.pose2.orientation.w = q[1].w();
+                        msg.n2.x = n[goodSolutionIndex[1]].at<double>(0,0);
+                        msg.n2.y = n[goodSolutionIndex[1]].at<double>(1,0);
+                        msg.n2.z = n[goodSolutionIndex[1]].at<double>(2,0);
+                    }
+                }
+                else
+                {
+                    msg.decomp_successful = false;
                 }
                 
-                // Construct message
-                msg.newPixels = points;
-                msg.refPixels = refPointsMsg;
-                msg.pose1.position.x = T[goodSolutionIndex[0]].at<double>(0,0);
-                msg.pose1.position.y = T[goodSolutionIndex[0]].at<double>(1,0);
-                msg.pose1.position.z = T[goodSolutionIndex[0]].at<double>(2,0);
-                msg.pose1.orientation.x = q[0].x();
-                msg.pose1.orientation.y = q[0].y();
-                msg.pose1.orientation.z = q[0].z();
-                msg.pose1.orientation.w = q[0].w();
-                msg.n1.x = n[goodSolutionIndex[0]].at<double>(0,0);
-                msg.n1.y = n[goodSolutionIndex[0]].at<double>(1,0);
-                msg.n1.z = n[goodSolutionIndex[0]].at<double>(2,0);
-                msg.alphar = alphaRed;
-                msg.alphag = alphaGreen;
-                msg.alphac = alphaCyan;
-                msg.alphap = alphaPurple;
-                
-                if (goodSolutionIndex.size() > 1)
-                {
-                    msg.pose2.position.x = T[goodSolutionIndex[1]].at<double>(0,0);
-                    msg.pose2.position.y = T[goodSolutionIndex[1]].at<double>(1,0);
-                    msg.pose2.position.z = T[goodSolutionIndex[1]].at<double>(2,0);
-                    msg.pose2.orientation.x = q[1].x();
-                    msg.pose2.orientation.y = q[1].y();
-                    msg.pose2.orientation.z = q[1].z();
-                    msg.pose2.orientation.w = q[1].w();
-                    msg.n2.x = n[goodSolutionIndex[1]].at<double>(0,0);
-                    msg.n2.y = n[goodSolutionIndex[1]].at<double>(1,0);
-                    msg.n2.z = n[goodSolutionIndex[1]].at<double>(2,0);
-                }
+                // publish
+                solnPub.publish(msg);
             }
-            else
-            {
-                msg.decomp_successful = false;
-            }
-            
-            // publish
-            solnPub.publish(msg);
+            lastPointsMsg = points;
         }
-        lastPointsMsg = points;
+        catch (cv::Exception ex)
+        {
+            if (referenceSet && points.features_found)
+            {
+                homography_vsc_cl::HomogDecompSolns msg;
+                msg.header.stamp = points.header.stamp;
+                msg.decomp_successful = false;
+                solnPub.publish(msg);
+            }
+        }
     }
     
 }; // end HomogDecomp class

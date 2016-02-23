@@ -123,8 +123,10 @@ class Joycall
             body_world_vel_sub = nh.subscribe("/bebop/vel", 1, &Joycall::body_world_vel_callback, this);// subscribing to the body velocity publisher
             velCmdHomogSub = nh.subscribe("desVelHomog",1,&Joycall::velCmdHomogCB,this);
             velCmdMocapSub = nh.subscribe("desVelMocap",1,&Joycall::velCmdMocapCB,this);
-        
             cmd_vel_pub.publish(geometry_msgs::Twist());// initially sending it a desired command of 0
+            
+            gimbal_state_desired.angular.y = -60;// adjust the gimbal
+            camera_state_pub.publish(gimbal_state_desired);// update the angle
         }
         
         // homog velocity command callback
@@ -133,7 +135,7 @@ class Joycall
             watchdogTimer.stop();
             error.setValue(msg.linear.x - body_vel.linear.x, msg.linear.y - body_vel.linear.y, msg.linear.z - body_vel.linear.z);
             error_yaw = msg.angular.z - body_vel.angular.z;
-            
+
             // if some time has passed between the last body velocity time and the current body velocity time then will calculate the (feed forward PD)
             if (std::abs(curr_body_vel_time.toSec() - last_body_vel_time.toSec()) > 0.00001)
             {   
@@ -148,16 +150,7 @@ class Joycall
                 velCmdHomog.angular.z = -1*cap_vel_auton(kyaw*msg.angular.z + kp_yaw*error_yaw + kd_yaw*errorDot_yaw); // z must be switched because bebop driver http://bebop-autonomy.readthedocs.org/en/latest/piloting.html
             }
             
-            last_body_vel_time = curr_body_vel_time;// update last time body velocity was recieved
-            last_error = error;
-            last_error_yaw = error_yaw;
-            
-            error_gm.linear.x = error.getX(); error_gm.linear.y = error.getY(); error_gm.linear.z = error.getZ(); error_gm.angular.z = error_yaw;
-            errorDot_gm.linear.x = errorDot.getX(); errorDot_gm.linear.y = errorDot.getY(); errorDot_gm.linear.z = errorDot.getZ(); errorDot_gm.angular.z = kyaw*msg.angular.z + kp_yaw*error_yaw + kd_yaw*errorDot_yaw;
-            error_pub.publish(error_gm);
-            errorDot_pub.publish(errorDot_gm);
-            
-            if (start_autonomous)
+            if (left_bumper > 0)
             {
                 recievedVelCmdHomog = true;
             }
@@ -171,7 +164,6 @@ class Joycall
             watchdogTimer.stop();
             error.setValue(msg.linear.x - body_vel.linear.x, msg.linear.y - body_vel.linear.y, msg.linear.z - body_vel.linear.z);
             error_yaw = msg.angular.z - body_vel.angular.z;
-            
             // if some time has passed between the last body velocity time and the current body velocity time then will calculate the (feed forward PD)
             if (std::abs(curr_body_vel_time.toSec() - last_body_vel_time.toSec()) > 0.00001)
             {   
@@ -190,12 +182,7 @@ class Joycall
             last_error = error;
             last_error_yaw = error_yaw;
             
-            error_gm.linear.x = error.getX(); error_gm.linear.y = error.getY(); error_gm.linear.z = error.getZ(); error_gm.angular.z = error_yaw;
-            errorDot_gm.linear.x = errorDot.getX(); errorDot_gm.linear.y = errorDot.getY(); errorDot_gm.linear.z = errorDot.getZ(); errorDot_gm.angular.z = kyaw*msg.angular.z + kp_yaw*error_yaw + kd_yaw*errorDot_yaw;
-            error_pub.publish(error_gm);
-            errorDot_pub.publish(errorDot_gm);
-            
-            if (start_autonomous)
+            if (right_bumper > 0)
             {
                 recievedVelCmdMocap = true;
             }
@@ -216,7 +203,7 @@ class Joycall
             double tilt = msg->tilt;
             gimbal_state_current.angular.y = tilt;
             gimbal_state_current.angular.z = pan;
-            std::cout << "\ngimbal tilt angle: " << gimbal_state_current.angular.y << " pan angle: " << gimbal_state_current.angular.z << std::endl;
+            //std::cout << "\ngimbal tilt angle: " << gimbal_state_current.angular.y << " pan angle: " << gimbal_state_current.angular.z << std::endl;
         }
         
         /********** callback for the body pose **********/
@@ -233,7 +220,8 @@ class Joycall
         
         /********** callback for the body velocity **********/
         void body_vel_callback(const geometry_msgs::TwistStamped& msg)
-        {           
+        {
+            
             body_vel = msg.twist;
             curr_body_vel_time  = msg.header.stamp;
             if (first_body_vel)
@@ -241,6 +229,7 @@ class Joycall
                 start_body_vel_time = curr_body_vel_time;
                 first_body_vel = false;
             }
+            //std::cout << "current body time: " << curr_body_vel_time - start_body_vel_time << std::endl;
         }
         
         /********** callback for the controller **********/
@@ -404,6 +393,7 @@ int main(int argc, char** argv)
     
     double marker_center[2] = {(red_wrt_world.getOrigin().getX() + green_wrt_world.getOrigin().getX() + cyan_wrt_world.getOrigin().getX() + purple_wrt_world.getOrigin().getX())/4.0,
                                (red_wrt_world.getOrigin().getY() + green_wrt_world.getOrigin().getY() + cyan_wrt_world.getOrigin().getY() + purple_wrt_world.getOrigin().getY())/4.0};// use the center of the markers as the center of the circle
+    double boundaries[5] = {marker_center[0] + joycall.x_bounds[0], marker_center[0] + joycall.x_bounds[1], marker_center[1] + joycall.y_bounds[0], marker_center[1] + joycall.y_bounds[1], joycall.z_bounds[1]};
     
     ros::Time start_time = ros::Time::now();
     
@@ -423,35 +413,35 @@ int main(int argc, char** argv)
         }
         
         // check if upper x boundary exceeded
-        if (joycall.body_wrt_world.getOrigin().getX() >= joycall.x_bounds[1]-marker_center[0])
+        if (joycall.body_wrt_world.getOrigin().getX() >= boundaries[1])
         {
             joycall.bound_push_back_temp.setX(-1*joycall.bound_push_back_mag);
             joycall.x_bounds_exceeded[1] = true;
         }
         
         // check if upper x lower boundary exceeded
-        if ((joycall.body_wrt_world.getOrigin().getX() <= joycall.x_bounds[0]-marker_center[0]) && !joycall.x_bounds_exceeded[1])
+        if (joycall.body_wrt_world.getOrigin().getX() <= boundaries[0])
         {
             joycall.bound_push_back_temp.setX(joycall.bound_push_back_mag);
             joycall.x_bounds_exceeded[0] = true;
         }
         
         // check if upper y boundary exceeded
-        if (joycall.body_wrt_world.getOrigin().getY() >= joycall.y_bounds[1]-marker_center[1])
+        if (joycall.body_wrt_world.getOrigin().getY() >= boundaries[3])
         {
             joycall.bound_push_back_temp.setY(-1*joycall.bound_push_back_mag);
             joycall.y_bounds_exceeded[1] = true;
         }
         
         // check if upper y lower boundary exceeded
-        if ((joycall.body_wrt_world.getOrigin().getY() <= joycall.y_bounds[0]-marker_center[1]) && !joycall.y_bounds_exceeded[1])
+        if (joycall.body_wrt_world.getOrigin().getY() <= boundaries[2])
         {
             joycall.bound_push_back_temp.setY(joycall.bound_push_back_mag);
             joycall.y_bounds_exceeded[0] = true;
         }
         
         // check if upper z boundary exceeded
-        if (joycall.body_wrt_world.getOrigin().getZ() >= joycall.z_bounds[1])
+        if (joycall.body_wrt_world.getOrigin().getZ() >= boundaries[4])
         {
             joycall.bound_push_back_temp.setZ(-1*joycall.bound_push_back_mag);
             joycall.z_bounds_exceeded[1] = true;
@@ -481,18 +471,25 @@ int main(int argc, char** argv)
             
             if (joycall.recievedVelCmdHomog || joycall.recievedVelCmdMocap)
             {
-                if (joycall.right_bumper > 0)
+                if (joycall.recievedVelCmdMocap)
                 {
                     joycall.command_out = joycall.velCmdMocap;
+                    joycall.recievedVelCmdMocap = false;
+                    //std::cout << "Mocap" << std::endl;
+                    //std::cout << joycall.command_out << std::endl;
                 }
                 
-                if (joycall.left_bumper > 0)
+                if (joycall.recievedVelCmdHomog)
                 {
                     joycall.command_out = joycall.velCmdHomog;
+                    joycall.recievedVelCmdHomog = false;
+                    //std::cout << "Homog" << std::endl;
+                    //std::cout << joycall.command_out << std::endl;
                 }
-                joycall.recievedVelCmdHomog = false;
-                joycall.recievedVelCmdMocap = false;
                 send_command = true;
+                joycall.last_body_vel_time = joycall.curr_body_vel_time;// update last time body velocity was recieved
+                joycall.last_error = joycall.error;
+                joycall.last_error_yaw = joycall.error_yaw;
             }
         }
         
@@ -527,11 +524,11 @@ int main(int argc, char** argv)
         if (send_command)
         {
             joycall.cmd_vel_pub.publish(joycall.command_out);// publish command;
-            std::cout << "\npublish command" << std::endl;
-            std::cout << "linear x: " << joycall.command_out.linear.x << std::endl;
-            std::cout << "linear y: " << joycall.command_out.linear.y << std::endl;
-            std::cout << "linear z: " << joycall.command_out.linear.z << std::endl;
-            std::cout << "angular z: " << joycall.command_out.angular.z << std::endl << std::endl;
+            //std::cout << "\npublish command" << std::endl;
+            //std::cout << "linear x: " << joycall.command_out.linear.x << std::endl;
+            //std::cout << "linear y: " << joycall.command_out.linear.y << std::endl;
+            //std::cout << "linear z: " << joycall.command_out.linear.z << std::endl;
+            //std::cout << "angular z: " << joycall.command_out.angular.z << std::endl << std::endl;
         }
         
         if (write_to_file)

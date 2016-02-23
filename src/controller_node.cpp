@@ -32,7 +32,8 @@ class Controller
     ros::Publisher velPubHomog;
     ros::Publisher velPubMocap;
     ros::Publisher outputPub;
-    ros::Publisher debugPub;
+    ros::Publisher debugMocapPub;
+    ros::Publisher debugHomogPub;
     tf::TransformListener tfl;
     tf::TransformBroadcaster tfbr;
     ros::Timer mocapControlTimer;
@@ -147,8 +148,6 @@ public:
         Kv = (Eigen::Vector3d(kvXY, kvXY, kvZ)).asDiagonal();
         Kw = kw*Eigen::Matrix3d::Identity();
         zStar = 0;
-        zhatHomog = 0.01;
-        zhatMocap = zhatHomog;
         vcActual = Eigen::Vector3d::Zero();
         wcActual = Eigen::Vector3d::Zero();
         
@@ -159,7 +158,8 @@ public:
         velPubHomog = nh.advertise<geometry_msgs::Twist>("desVelHomog",10);
         velPubMocap = nh.advertise<geometry_msgs::Twist>("desVelMocap",10);
         outputPub = nh.advertise<homography_vsc_cl::Output>("controller_output",10);
-        debugPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug",10);
+        debugMocapPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_mocap",10);
+        debugHomogPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_homog",10);
         
         // some subscribers
         actualVelSub = nh.subscribe(imageTFframe+"/body_vel",1,&Controller::actualVelCB,this);
@@ -185,6 +185,10 @@ public:
         uBuffMocap.resize(3,0);
         YstackMocap = Eigen::MatrixXd::Zero(3,stackSize);
         UstackMocap = Eigen::MatrixXd::Zero(3,stackSize);
+        
+        // Intialize parameter estimates
+        zhatHomog = 0.01;
+        zhatMocap = zhatHomog;
         
         // set last time
         desLastTime = ros::Time::now().toSec();
@@ -243,26 +247,44 @@ public:
     
     void homogCB(const homography_vsc_cl::HomogDecompSolns& soln)
     {
-        // Find right solution
-        Eigen::Vector3d n1(soln.n1.x, soln.n1.y, soln.n1.z);
-        Eigen::Vector3d n2(soln.n2.x, soln.n2.y, soln.n2.z);
-        Eigen::Quaterniond q;
-        if ((n1-nStar).squaredNorm() < (n2-nStar).squaredNorm())
+        if (soln.decomp_successful)
         {
-            q = (Eigen::Quaterniond(soln.pose1.orientation.w, soln.pose1.orientation.x, soln.pose1.orientation.y, soln.pose1.orientation.z)).inverse();
+            // Find right solution
+            Eigen::Vector3d n1(soln.n1.x, soln.n1.y, soln.n1.z);
+            Eigen::Vector3d n2(soln.n2.x, soln.n2.y, soln.n2.z);
+            Eigen::Quaterniond q;
+            if ((n1-nStar).squaredNorm() < (n2-nStar).squaredNorm())
+            {
+                q = (Eigen::Quaterniond(soln.pose1.orientation.w, soln.pose1.orientation.x, soln.pose1.orientation.y, soln.pose1.orientation.z)).inverse();
+            }
+            else
+            {
+                q = (Eigen::Quaterniond(soln.pose2.orientation.w, soln.pose2.orientation.x, soln.pose2.orientation.y, soln.pose2.orientation.z)).inverse();
+            }
+            
+            // Other stuff
+            Eigen::Vector3d pixels(soln.newPixels.pr.x, soln.newPixels.pr.y, 1);
+            double alpha1 = soln.alphar;
+            
+            //debug
+            homography_vsc_cl::Debug msg;
+            msg.header.stamp = ros::Time::now();
+            msg.q.x = q.x();
+            msg.q.y = q.y();
+            msg.q.z = q.z();
+            msg.q.w = q.w();
+            msg.alpha = alpha1;
+            msg.zStar = zStar;
+            msg.newPixels.pr.x = pixels.x();
+            msg.newPixels.pr.y = pixels.y();
+            debugHomogPub.publish(msg);
+            
+            if (alpha1 > 0)
+            {
+                // Calculate control and publish
+                calculateControl(pixels, q, alpha1, false);
+            }
         }
-        else
-        {
-            q = (Eigen::Quaterniond(soln.pose2.orientation.w, soln.pose2.orientation.x, soln.pose2.orientation.y, soln.pose2.orientation.z)).inverse();
-        }
-        
-        // Other stuff
-        Eigen::Vector3d pixels(soln.newPixels.pr.x, soln.newPixels.pr.y, 1);
-        double alpha1 = soln.alphar;
-        
-        // Calculate control and publish
-        calculateControl(pixels, q, alpha1, false);
-        
     }
     
     void mocapCB(const ros::TimerEvent& event)
@@ -304,10 +326,13 @@ public:
         msg.zStar = zStar;
         msg.newPixels.pr.x = pixels.x();
         msg.newPixels.pr.y = pixels.y();
-        debugPub.publish(msg);
-        
-        // Calculate control and publish
-        calculateControl(pixels, q, alpha1, true);
+        debugMocapPub.publish(msg);
+    
+        if (alpha1 > 0)
+        {
+            // Calculate control and publish
+            calculateControl(pixels, q, alpha1, true);       
+        }
     }
     
     void zhatUpdateCB(const ros::TimerEvent& event)
@@ -346,7 +371,7 @@ public:
         }
         
         // Update
-        zhatHomog += zhatDotMocap*delT;
+        zhatHomog += zhatDotHomog*delT;
         zhatMocap += zhatDotMocap*delT;
         
         // Output
@@ -388,8 +413,9 @@ public:
         // control
         Eigen::Vector3d wc = -Kw*Eigen::Vector3d(qTilde.vec()) + qTilde.inverse()*wcd; // qTilde.inverse()*wcd rotates wcd to current camera frame, equivalent to qTilde^-1*wcd*qTilde in paper
         Eigen::Vector3d phi = Lv*m1.cross(wc) - pedDot;
-        Eigen::Vector3d vc = (1.0/alpha1)*Lv.inverse()*(Kv*ev + phi*zhat);
+        Eigen::Vector3d vc = (1.0/alpha1)*Lv.inverse()*(Kv*ev + phi*zStar);
         
+        // transforming velocities to bebop body frame
         tf::StampedTransform tfCamera2Body;
         tfl.waitForTransform(cameraName,imageTFframe,ros::Time(0),ros::Duration(0.01));
         tfl.lookupTransform(cameraName,imageTFframe,ros::Time(0),tfCamera2Body);
@@ -416,92 +442,114 @@ public:
             vc2 = vc;
         }
         
-        // Update buffers and publish
-        if (forMocap)
+        // nan check
+        bool nanCheckPass = !std::isnan(vc2.x()) && !std::isnan(vc2.y()) && !std::isnan(vc2.z()) && !isnan(phi2.x()) && !isnan(phi2.y()) && !isnan(phi2.z()) && !std::isnan(wc.x()) && !isnan(wc.y()) && !isnan(wc.z());
+        bool infCheckPass = !std::isinf(vc2.x()) && !std::isinf(vc2.y()) && !std::isinf(vc2.z()) && !isinf(phi2.x()) && !isinf(phi2.y()) && !isinf(phi2.z()) && !std::isinf(wc.x()) && !isinf(wc.y()) && !isinf(wc.z());
+        
+        // error check before push to stacks and buffers
+        if (nanCheckPass && infCheckPass)
         {
-            int numCols = tBuffMocap.cols();
-            if (numCols < mocapBuffSize)
+            // Update buffers and publish
+            if (forMocap)
             {
-                // Update Integration buffers
-                tBuffMocap.conservativeResize(Eigen::NoChange, numCols+1);
-                tBuffMocap.rightCols<1>() << ros::Time::now().toSec();
-                evBuffMocap.conservativeResize(Eigen::NoChange, numCols+1);
-                evBuffMocap.rightCols<1>() << ev;
-                phiBuffMocap.conservativeResize(Eigen::NoChange, numCols+1);
-                phiBuffMocap.rightCols<1>() << phi2;
-                uBuffMocap.conservativeResize(Eigen::NoChange, numCols+1);
-                uBuffMocap.rightCols<1>() << alpha1*Lv*vc2;
+                int numCols = tBuffMocap.cols();
+                if (numCols < mocapBuffSize)
+                {
+                    // Update Integration buffers
+                    tBuffMocap.conservativeResize(Eigen::NoChange, numCols+1);
+                    tBuffMocap.rightCols<1>() << ros::Time::now().toSec();
+                    evBuffMocap.conservativeResize(Eigen::NoChange, numCols+1);
+                    evBuffMocap.rightCols<1>() << ev;
+                    phiBuffMocap.conservativeResize(Eigen::NoChange, numCols+1);
+                    phiBuffMocap.rightCols<1>() << phi2;
+                    uBuffMocap.conservativeResize(Eigen::NoChange, numCols+1);
+                    uBuffMocap.rightCols<1>() << alpha1*Lv*vc2;
+                }
+                else
+                {
+                    // Update Integration buffers
+                    tBuffMocap << tBuffMocap.rightCols(mocapBuffSize-1).eval(), ros::Time::now().toSec();
+                    evBuffMocap << evBuffMocap.rightCols(mocapBuffSize-1).eval(), ev;
+                    phiBuffMocap << phiBuffMocap.rightCols(mocapBuffSize-1).eval(), phi2;
+                    uBuffMocap << uBuffMocap.rightCols(mocapBuffSize-1).eval(), alpha1*Lv*vc2;
+                    
+                    // Integrate
+                    Eigen::MatrixXd delTbuff = (tBuffMocap.rightCols(mocapBuffSize-1) - tBuffMocap.leftCols(mocapBuffSize-1));
+                    Eigen::Vector3d PHI = 0.5*((phiBuffMocap.leftCols(mocapBuffSize-1) + phiBuffMocap.rightCols(mocapBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
+                    Eigen::Vector3d scriptY = evBuffMocap.rightCols<1>() - evBuffMocap.leftCols<1>() - PHI;
+                    Eigen::Vector3d scriptU = 0.5*((uBuffMocap.leftCols(mocapBuffSize-1) + uBuffMocap.rightCols(mocapBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
+                    
+                    // Add data to stack
+                    int index;
+                    double minVal = YstackMocap.colwise().squaredNorm().minCoeff(&index);
+                    //std::cout << "minVal: " << minVal << std::endl;
+                    if (scriptY.squaredNorm() > minVal)
+                    {
+                        YstackMocap.col(index) = scriptY;
+                        UstackMocap.col(index) = scriptU;
+                        //std::cout << "index: " << index << std::endl;
+                    }
+                }
+                
+                // publish
+                velPubMocap.publish(twistMsg);
             }
             else
             {
-                // Update Integration buffers
-                tBuffMocap << tBuffMocap.rightCols(mocapBuffSize-1).eval(), ros::Time::now().toSec();
-                evBuffMocap << evBuffMocap.rightCols(mocapBuffSize-1).eval(), ev;
-                phiBuffMocap << phiBuffMocap.rightCols(mocapBuffSize-1).eval(), phi2;
-                uBuffMocap << uBuffMocap.rightCols(mocapBuffSize-1).eval(), alpha1*Lv*vc2;
-                
-                // Integrate
-                Eigen::MatrixXd delTbuff = (tBuffMocap.rightCols(mocapBuffSize-1) - tBuffMocap.leftCols(mocapBuffSize-1));
-                Eigen::Vector3d PHI = 0.5*((phiBuffMocap.leftCols(mocapBuffSize-1) + phiBuffMocap.rightCols(mocapBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
-                Eigen::Vector3d scriptY = evBuffMocap.rightCols<1>() - evBuffMocap.leftCols<1>() - PHI;
-                Eigen::Vector3d scriptU = 0.5*((uBuffMocap.leftCols(mocapBuffSize-1) + uBuffMocap.rightCols(mocapBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
-                
-                // Add data to stack
-                int index;
-                double minVal = YstackMocap.colwise().squaredNorm().minCoeff(&index);
-                //std::cout << "minVal: " << minVal << std::endl;
-                if (scriptY.squaredNorm() > minVal)
+                int numCols = tBuffHomog.cols();
+                if (numCols < homogBuffSize)
                 {
-                    YstackMocap.col(index) = scriptY;
-                    UstackMocap.col(index) = scriptU;
-                    //std::cout << "index: " << index << std::endl;
+                    // Update Integration buffers
+                    tBuffHomog.conservativeResize(Eigen::NoChange, numCols+1);
+                    tBuffHomog.rightCols<1>() << ros::Time::now().toSec();
+                    evBuffHomog.conservativeResize(Eigen::NoChange, numCols+1);
+                    evBuffHomog.rightCols<1>() << ev;
+                    phiBuffHomog.conservativeResize(Eigen::NoChange, numCols+1);
+                    phiBuffHomog.rightCols<1>() << phi2;
+                    uBuffHomog.conservativeResize(Eigen::NoChange, numCols+1);
+                    uBuffHomog.rightCols<1>() << alpha1*Lv*vc2;
                 }
+                else
+                {
+                    // Update Integration buffers
+                    tBuffHomog << tBuffHomog.rightCols(homogBuffSize-1).eval(), ros::Time::now().toSec();
+                    evBuffHomog << evBuffHomog.rightCols(homogBuffSize-1).eval(), ev;
+                    phiBuffHomog << phiBuffHomog.rightCols(homogBuffSize-1).eval(), phi2;
+                    uBuffHomog << uBuffHomog.rightCols(homogBuffSize-1).eval(), alpha1*Lv*vc2;
+                    
+                    // Integrate
+                    Eigen::MatrixXd delTbuff = (tBuffHomog.rightCols(homogBuffSize-1) - tBuffHomog.leftCols(homogBuffSize-1));
+                    Eigen::Vector3d PHI = 0.5*((phiBuffHomog.leftCols(homogBuffSize-1) + phiBuffHomog.rightCols(homogBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
+                    Eigen::Vector3d scriptY = evBuffHomog.rightCols<1>() - evBuffHomog.leftCols<1>() - PHI;
+                    Eigen::Vector3d scriptU = 0.5*((uBuffHomog.leftCols(homogBuffSize-1) + uBuffHomog.rightCols(homogBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
+                    
+                    // Add data to stack
+                    int index;
+                    double minVal = YstackHomog.colwise().squaredNorm().minCoeff(&index);
+                    if (scriptY.squaredNorm() > minVal)
+                    {
+                        YstackHomog.col(index) = scriptY;
+                        UstackHomog.col(index) = scriptU;
+                    }
+                }
+                
+                // publish
+                velPubHomog.publish(twistMsg);
             }
-            
-            // publish
-            velPubMocap.publish(twistMsg);
         }
         else
         {
-            int numCols = tBuffHomog.cols();
-            if (numCols < homogBuffSize)
+            // send zeros
+            if (forMocap)
             {
-                // Update Integration buffers
-                tBuffHomog.conservativeResize(Eigen::NoChange, numCols+1);
-                tBuffHomog.rightCols<1>() << ros::Time::now().toSec();
-                evBuffHomog.conservativeResize(Eigen::NoChange, numCols+1);
-                evBuffHomog.rightCols<1>() << ev;
-                phiBuffHomog.conservativeResize(Eigen::NoChange, numCols+1);
-                phiBuffHomog.rightCols<1>() << phi2;
-                uBuffHomog.conservativeResize(Eigen::NoChange, numCols+1);
-                uBuffHomog.rightCols<1>() << alpha1*Lv*vc2;
+                // publish
+                velPubMocap.publish(geometry_msgs::Twist());
             }
             else
             {
-                // Update Integration buffers
-                tBuffHomog << tBuffHomog.rightCols(homogBuffSize-1).eval(), ros::Time::now().toSec();
-                evBuffHomog << evBuffHomog.rightCols(homogBuffSize-1).eval(), ev;
-                phiBuffHomog << phiBuffHomog.rightCols(homogBuffSize-1).eval(), phi2;
-                uBuffHomog << uBuffHomog.rightCols(homogBuffSize-1).eval(), alpha1*Lv*vc2;
-                
-                // Integrate
-                Eigen::MatrixXd delTbuff = (tBuffHomog.rightCols(homogBuffSize-1) - tBuffHomog.leftCols(homogBuffSize-1));
-                Eigen::Vector3d PHI = 0.5*((phiBuffHomog.leftCols(homogBuffSize-1) + phiBuffHomog.rightCols(homogBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
-                Eigen::Vector3d scriptY = evBuffHomog.rightCols<1>() - evBuffHomog.leftCols<1>() - PHI;
-                Eigen::Vector3d scriptU = 0.5*((uBuffHomog.leftCols(homogBuffSize-1) + uBuffHomog.rightCols(homogBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
-                
-                // Add data to stack
-                int index;
-                double minVal = YstackHomog.colwise().squaredNorm().minCoeff(&index);
-                if (scriptY.squaredNorm() > minVal)
-                {
-                    YstackHomog.col(index) = scriptY;
-                    UstackHomog.col(index) = scriptU;
-                }
+                // publish
+                velPubHomog.publish(geometry_msgs::Twist());
             }
-            
-            // publish
-            velPubHomog.publish(twistMsg);
         }
     }
     
@@ -598,7 +646,7 @@ public:
     
     void refPubCB(const ros::TimerEvent& event)
     {
-        tfRef.stamp_ = ros::Time::now() + ros::Duration(0.01);
+        tfRef.stamp_ = ros::Time::now() + ros::Duration(0.1);
         tfbr.sendTransform(tfRef);
     }
     
