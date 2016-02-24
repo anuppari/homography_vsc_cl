@@ -63,6 +63,7 @@ class Controller
     Eigen::Vector3d vcActual;
     Eigen::Vector3d wcActual;
     double zStar;
+    double filterAlpha; // in range [0,1]
     
     // Mocap based control parameters
     std::string cameraName;
@@ -132,6 +133,7 @@ public:
         nhp.param<double>("desRadius",desRadius,2.0);
         nhp.param<double>("desPeriod",desPeriod,45.0);
         nhp.param<double>("desHeight",desHeight,1.0);
+        nhp.param<double>("filterAlpha",filterAlpha,0.2);
         
         // Get camera parameters
         std::cout << "Getting camera parameters on topic: "+cameraName+"/camera_info" << std::endl;
@@ -394,11 +396,15 @@ public:
         Eigen::Vector3d ev = pe - ped;
         Eigen::Quaterniond qTilde = qd.inverse()*q;
         
-        // maintain continuity of q
+        // maintain continuity of q, and filter
         Eigen::Quaterniond qTildeLast = (forMocap ? qTildeLastMocap : qTildeLastHomog);
         if ((qTildeLast.coeffs() - -1*qTilde.coeffs()).squaredNorm() < (qTildeLast.coeffs() - qTilde.coeffs()).squaredNorm()) { qTilde = Eigen::Quaterniond(-1*qTilde.coeffs()); }
         if (forMocap) { qTildeLastMocap = qTilde; }
-        else { qTildeLastHomog = qTilde; }
+        else
+        {
+            qTilde = Eigen::Quaterniond((1-filterAlpha)*qTilde.coeffs() + filterAlpha*qTildeLast.coeffs());
+            qTildeLastHomog = qTilde;
+        }
         
         // Lv
         Eigen::Matrix3d camMatFactor = camMat;

@@ -15,5 +15,6 @@
     <param name="desRadius" value="1.0" />
     <param name="desPeriod" value="60.0" />
     <param name="desHeight" value="1.5" />
+    <param name="filterAlpha" value="0.2" />
   </node>
 </launch>
