@@ -168,19 +168,20 @@ public:
                         goodSolutionIndex.push_back(ii);
                         
                         // check if rotation is improper
-                        if (cv::determinant(R[ii]) < 0)
+                        if (cv::determinant(R.at(ii)) < 0)
                         {
-                            R[ii] = -1*R[ii];
-                            T[ii] = -1*T[ii];
+                            R.at(ii) *= -1.0;
+                            T.at(ii) *= -1.0;
+                            n.at(ii) *= -1.0;
                         }
                     }
                 }
                 
                 // Get alpha
-                double alphaRed = m.at<double>(0,2)/(H.row(2).dot(mRef.row(0)));
-                double alphaGreen = m.at<double>(1,2)/(H.row(2).dot(mRef.row(1)));
-                double alphaCyan = m.at<double>(2,2)/(H.row(2).dot(mRef.row(2)));
-                double alphaPurple = m.at<double>(3,2)/(H.row(2).dot(mRef.row(3)));
+                double alphaRed = std::abs(m.at<double>(0,2)/(H.row(2).dot(mRef.row(0))));
+                double alphaGreen = std::abs(m.at<double>(1,2)/(H.row(2).dot(mRef.row(1))));
+                double alphaCyan = std::abs(m.at<double>(2,2)/(H.row(2).dot(mRef.row(2))));
+                double alphaPurple = std::abs(m.at<double>(3,2)/(H.row(2).dot(mRef.row(3))));
                 
                 // Construct output
                 homography_vsc_cl::HomogDecompSolns msg;
@@ -195,6 +196,7 @@ public:
                         Eigen::Matrix3d eigR;
                         cv::cv2eigen(R[goodSolutionIndex[ii]],eigR);
                         q[ii] = Eigen::Quaterniond(eigR);
+                        q[ii].normalize();
                     }
                     
                     // publish tf

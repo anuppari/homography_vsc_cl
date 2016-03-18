@@ -271,10 +271,13 @@ public:
             //debug
             homography_vsc_cl::Debug msg;
             msg.header.stamp = ros::Time::now();
-            msg.q.x = q.x();
-            msg.q.y = q.y();
-            msg.q.z = q.z();
-            msg.q.w = q.w();
+            msg.q.x = q.inverse().x();
+            msg.q.y = q.inverse().y();
+            msg.q.z = q.inverse().z();
+            msg.q.w = q.inverse().w();
+            msg.nStar.x = nStar.x();
+            msg.nStar.y = nStar.y();
+            msg.nStar.z = nStar.z();
             msg.alpha = alpha1;
             msg.zStar = zStar;
             msg.newPixels.pr.x = pixels.x();
@@ -320,10 +323,10 @@ public:
         //debug
         homography_vsc_cl::Debug msg;
         msg.header.stamp = ros::Time::now();
-        msg.q.x = q.x();
-        msg.q.y = q.y();
-        msg.q.z = q.z();
-        msg.q.w = q.w();
+        msg.q.x = q.inverse().x();
+        msg.q.y = q.inverse().y();
+        msg.q.z = q.inverse().z();
+        msg.q.w = q.inverse().w();
         msg.alpha = alpha1;
         msg.zStar = zStar;
         msg.newPixels.pr.x = pixels.x();
@@ -419,7 +422,7 @@ public:
         // control
         Eigen::Vector3d wc = -Kw*Eigen::Vector3d(qTilde.vec()) + qTilde.inverse()*wcd; // qTilde.inverse()*wcd rotates wcd to current camera frame, equivalent to qTilde^-1*wcd*qTilde in paper
         Eigen::Vector3d phi = Lv*m1.cross(wc) - pedDot;
-        Eigen::Vector3d vc = (1.0/alpha1)*Lv.inverse()*(Kv*ev + phi*zStar);
+        Eigen::Vector3d vc = (1.0/alpha1)*Lv.inverse()*(Kv*ev + phi*zhat);
         
         // transforming velocities to bebop body frame
         tf::StampedTransform tfCamera2Body;
@@ -633,7 +636,7 @@ public:
                 zStar = tfMarker2Ref.getOrigin().getZ();
                 
                 // Get nStar
-                tf::Vector3 nStarVec = tf::quatRotate(tfRef.getRotation(),tf::Vector3(0,0,-1));
+                tf::Vector3 nStarVec = tf::quatRotate(tfRef.getRotation().inverse(),tf::Vector3(0,0,-1));
                 nStar << nStarVec.getX(), nStarVec.getY(), nStarVec.getZ();
             }
             catch(tf::TransformException ex)

@@ -16,8 +16,6 @@
 #include <opencv2/opencv.hpp>
 #include <tf/transform_broadcaster.h>
 #include <tf/transform_listener.h>
-#include <homog_track/ImageProcessingMsg.h>
-#include <homog_track/DecompMsg.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <sensor_msgs/Joy.h>
 #include <std_msgs/Empty.h>
@@ -193,7 +191,7 @@ class Joycall
         void timeout(const ros::TimerEvent& event)
         {
             cmd_vel_pub.publish(geometry_msgs::Twist());// publish 0s
-            std::cout << "\ntimer sent 0's" << std::endl;
+            //std::cout << "\ntimer sent 0's" << std::endl;
         }
         
         /********** callback for the gimbal **********/

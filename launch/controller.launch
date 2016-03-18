@@ -1,11 +1,11 @@
 <launch>
   <!-- controller -->
   <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" >
-    <param name="kvXY" value="0.5" />
-    <param name="kvZ" value="0.7" />
-    <param name="kw" value="0.7" />
-    <param name="gamma1" value="0.00001" />
-    <param name="gamma2" value="1.0" />
+    <param name="kvXY" value="1.5" />
+    <param name="kvZ" value="2.0" />
+    <param name="kw" value="0.5" />
+    <param name="gamma1" value="0.000001" />
+    <param name="gamma2" value="50.0" />
     <param name="intWindowTime" value="1.0" />
     <param name="stackSize" value="100" />
     <param name="mocapUpdateRate" value="300.0" />
@@ -15,6 +15,6 @@
     <param name="desRadius" value="1.0" />
     <param name="desPeriod" value="60.0" />
     <param name="desHeight" value="1.5" />
-    <param name="filterAlpha" value="0.2" />
+    <param name="filterAlpha" value="0.3" />
   </node>
 </launch>
