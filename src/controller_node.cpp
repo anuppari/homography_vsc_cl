@@ -34,12 +34,15 @@ class Controller
     ros::Publisher outputPub;
     ros::Publisher debugMocapPub;
     ros::Publisher debugHomogPub;
+    ros::Publisher debugDesPub;
+    ros::Publisher debugZhatPub;
     tf::TransformListener tfl;
     tf::TransformBroadcaster tfbr;
     ros::Timer mocapControlTimer;
     ros::Timer zhatUpdateTimer;
     ros::Timer refPubTimer;
     ros::Timer desUpdateTimer;
+    ros::Timer resetBuffersTimer;
     
     // Camera parameters
     Eigen::Matrix3d camMat;
@@ -74,23 +77,31 @@ class Controller
     double zhatHomog;
     int homogBuffSize;
     Eigen::Quaterniond qTildeLastHomog;
+    Eigen::Quaterniond qLastHomog;
     Eigen::MatrixXd tBuffHomog;
     Eigen::MatrixXd evBuffHomog;
     Eigen::MatrixXd phiBuffHomog;
     Eigen::MatrixXd uBuffHomog;
     Eigen::MatrixXd YstackHomog;
     Eigen::MatrixXd UstackHomog;
+    Eigen::Vector3d vcLastHomog;
+    Eigen::Vector3d wcLastHomog;
+    bool firstHomog;
     
     // Mocap buffers
     double zhatMocap;
     int mocapBuffSize;
     Eigen::Quaterniond qTildeLastMocap;
+    Eigen::Quaterniond qLastMocap;
     Eigen::MatrixXd tBuffMocap;
     Eigen::MatrixXd evBuffMocap;
     Eigen::MatrixXd phiBuffMocap;
     Eigen::MatrixXd uBuffMocap;
     Eigen::MatrixXd YstackMocap;
     Eigen::MatrixXd UstackMocap;
+    Eigen::Vector3d vcLastMocap;
+    Eigen::Vector3d wcLastMocap;
+    bool firstMocap;
     
     // Reference
     Eigen::Vector3d nStar;
@@ -103,12 +114,16 @@ class Controller
     double desLastTime;
     Eigen::Quaterniond qPanTilt;
     Eigen::Quaterniond qd;
+    Eigen::Quaterniond qdLast;
     Eigen::Vector3d desCamPos;
     Eigen::Quaterniond desCamOrient;
     Eigen::Vector3d ped;
     Eigen::Vector3d pedLast;
     Eigen::Vector3d pedDot;
+    Eigen::Vector3d pedDotLast;
     Eigen::Vector3d wcd;
+    bool firstDes;
+    bool secondDes;
     
 public:
     Controller()
@@ -162,6 +177,8 @@ public:
         outputPub = nh.advertise<homography_vsc_cl::Output>("controller_output",10);
         debugMocapPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_mocap",10);
         debugHomogPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_homog",10);
+        debugDesPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_des",10);
+        debugZhatPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_zhat",10);
         
         // some subscribers
         actualVelSub = nh.subscribe(imageTFframe+"/body_vel",1,&Controller::actualVelCB,this);
@@ -172,21 +189,27 @@ public:
     void initializeStates()
     {
         // Initialize buffers
-        homogBuffSize = (int) intWindowTime*30.0;
+        homogBuffSize = (int) (intWindowTime*30.0);
+        std::cout << "homogBuffSize: " << homogBuffSize << std::endl;
         tBuffHomog.resize(1,0);
         evBuffHomog.resize(3,0);
         phiBuffHomog.resize(3,0);
         uBuffHomog.resize(3,0);
         YstackHomog = Eigen::MatrixXd::Zero(3,stackSize);
         UstackHomog = Eigen::MatrixXd::Zero(3,stackSize);
+        vcLastHomog << 0,0,0;
+        firstHomog = true;
         
-        mocapBuffSize = (int) intWindowTime*mocapUpdateRate;
+        mocapBuffSize = (int) (intWindowTime*mocapUpdateRate);
+        std::cout << "mocapBuffSize: " << mocapBuffSize << std::endl;
         tBuffMocap.resize(1,0);
         evBuffMocap.resize(3,0);
         phiBuffMocap.resize(3,0);
         uBuffMocap.resize(3,0);
         YstackMocap = Eigen::MatrixXd::Zero(3,stackSize);
         UstackMocap = Eigen::MatrixXd::Zero(3,stackSize);
+        vcLastMocap << 0,0,0;
+        firstMocap = true;
         
         // Intialize parameter estimates
         zhatHomog = 0.01;
@@ -236,32 +259,60 @@ public:
         desCamOrient = Eigen::Quaterniond(tempRot);
         desUpdateCB(ros::TimerEvent()); // call once to update signals
         pedDot << 0,0,0; // reset
+        firstDes = true;
+        secondDes = true;
         
         // Subscribers
         homogSolnSub = nh.subscribe("homogDecompSoln",1,&Controller::homogCB,this);
+        
+        qdLast.setIdentity();
+        qLastHomog.setIdentity();
+        qLastMocap.setIdentity();
         
         // Timers
         desUpdateTimer = nh.createTimer(ros::Duration(1.0/desUpdateRate),&Controller::desUpdateCB,this,false);
         mocapControlTimer = nh.createTimer(ros::Duration(1.0/mocapUpdateRate),&Controller::mocapCB,this,false);
         zhatUpdateTimer = nh.createTimer(ros::Duration(1.0/zhatUpdateRate),&Controller::zhatUpdateCB,this,false);
         refPubTimer = nh.createTimer(ros::Duration(1.0/10),&Controller::refPubCB,this,false);
+        resetBuffersTimer = nh.createTimer(ros::Duration(0.1),&Controller::resetBuffersCB,this,false);
+    }
+    
+    void resetBuffersCB(const ros::TimerEvent& event)
+    {
+        // reset buffers
+        tBuffHomog.resize(1,0);
+        evBuffHomog.resize(3,0);
+        phiBuffHomog.resize(3,0);
+        uBuffHomog.resize(3,0);
+        vcLastHomog << 0,0,0;
+        firstHomog = true;
+        
     }
     
     void homogCB(const homography_vsc_cl::HomogDecompSolns& soln)
     {
         if (soln.decomp_successful)
         {
+            resetBuffersTimer.stop();
             // Find right solution
             Eigen::Vector3d n1(soln.n1.x, soln.n1.y, soln.n1.z);
             Eigen::Vector3d n2(soln.n2.x, soln.n2.y, soln.n2.z);
-            Eigen::Quaterniond q;
-            if ((n1-nStar).squaredNorm() < (n2-nStar).squaredNorm())
+            Eigen::Quaterniond q1,q2,q,qNeg;
+            q1 = Eigen::Quaterniond(soln.pose1.orientation.w, soln.pose1.orientation.x, soln.pose1.orientation.y, soln.pose1.orientation.z);
+            q2 = Eigen::Quaterniond(soln.pose2.orientation.w, soln.pose2.orientation.x, soln.pose2.orientation.y, soln.pose2.orientation.z);
+            if ((q2.norm() > 0) && ((n1-nStar).squaredNorm() > (n2-nStar).squaredNorm()))
             {
-                q = (Eigen::Quaterniond(soln.pose1.orientation.w, soln.pose1.orientation.x, soln.pose1.orientation.y, soln.pose1.orientation.z)).inverse();
+                q = q2.inverse();
             }
             else
             {
-                q = (Eigen::Quaterniond(soln.pose2.orientation.w, soln.pose2.orientation.x, soln.pose2.orientation.y, soln.pose2.orientation.z)).inverse();
+                q = q1.inverse();
+            }
+            
+            // compare to last solution
+            if ((qLastHomog.coeffs() - -1*q.coeffs()).squaredNorm() < (qLastHomog.coeffs() - q.coeffs()).squaredNorm()) 
+            { 
+                q = Eigen::Quaterniond(-1*q.coeffs()); 
             }
             
             // Other stuff
@@ -282,13 +333,21 @@ public:
             msg.zStar = zStar;
             msg.newPixels.pr.x = pixels.x();
             msg.newPixels.pr.y = pixels.y();
-            debugHomogPub.publish(msg);
             
             if (alpha1 > 0)
             {
                 // Calculate control and publish
-                calculateControl(pixels, q, alpha1, false);
+                calculateControl(pixels, q, alpha1, msg, false);
+                qLastHomog = q;
             }
+            msg.vcLast.x = vcLastHomog.x(); msg.vcLast.y = vcLastHomog.y(); msg.vcLast.z = vcLastHomog.z(); 
+            vcLastHomog << msg.vc.x, msg.vc.y, msg.vc.z;
+            msg.wcLast.x = wcLastHomog.x(); msg.wcLast.y = wcLastHomog.y(); msg.wcLast.z = wcLastHomog.z(); 
+            wcLastHomog << msg.wc.x, msg.wc.y, msg.wc.z;
+            msg.firstRun = firstHomog;
+            debugHomogPub.publish(msg);
+            firstHomog = false;
+            resetBuffersTimer.start();
         }
     }
     
@@ -317,6 +376,12 @@ public:
         // Orientation
         Eigen::Quaterniond q(tfIm2Ref.getRotation().getW(),tfIm2Ref.getRotation().getX(),tfIm2Ref.getRotation().getY(),tfIm2Ref.getRotation().getZ());
         
+        // compare to last solution
+        if ((qLastMocap.coeffs() - -1*q.coeffs()).squaredNorm() < (qLastMocap.coeffs() - q.coeffs()).squaredNorm()) 
+        { 
+            q = Eigen::Quaterniond(-1*q.coeffs()); 
+        }
+        
         // alpha
         double alpha1 = tfMarker2Ref.getOrigin().getZ()/tfMarker2Im.getOrigin().getZ();
         
@@ -331,13 +396,20 @@ public:
         msg.zStar = zStar;
         msg.newPixels.pr.x = pixels.x();
         msg.newPixels.pr.y = pixels.y();
-        debugMocapPub.publish(msg);
-    
+        
         if (alpha1 > 0)
         {
             // Calculate control and publish
-            calculateControl(pixels, q, alpha1, true);       
+            calculateControl(pixels, q, alpha1, msg, true);
+            qLastMocap = q;
         }
+        msg.vcLast.x = vcLastMocap.x(); msg.vcLast.y = vcLastMocap.y(); msg.vcLast.z = vcLastMocap.z(); 
+        vcLastMocap << msg.vc.x, msg.vc.y, msg.vc.z;
+        msg.wcLast.x = wcLastMocap.x(); msg.wcLast.y = wcLastMocap.y(); msg.wcLast.z = wcLastMocap.z(); 
+        wcLastMocap << msg.wc.x, msg.wc.y, msg.wc.z;
+        msg.firstRun = firstMocap;
+        debugMocapPub.publish(msg);
+        firstMocap = false;
     }
     
     void zhatUpdateCB(const ros::TimerEvent& event)
@@ -347,7 +419,8 @@ public:
         double timeNow = timestamp.toSec();
         double delT = timeNow - zLastTime;
         zLastTime = timeNow;
-        
+        homography_vsc_cl::Debug msg;
+        msg.header.stamp = ros::Time::now();
         //std::cout << delT << std::endl;
         
         // homography
@@ -364,6 +437,7 @@ public:
         if (evBuffMocap.cols() > 0)
         {
             double term1 = gamma1*evBuffMocap.rightCols<1>().transpose()*phiBuffMocap.rightCols<1>();
+            //double term1 = 0;
             double term2 = gamma1*gamma2*(YstackMocap.cwiseProduct((-1*YstackMocap*zhatMocap - UstackMocap).eval()).sum());
             zhatDotMocap = term1 + term2;
             //std::cout << "YstackMocap: \n" << YstackMocap << std::endl;
@@ -373,6 +447,9 @@ public:
             //std::cout << "YstackMocap.cwiseProduct((-1*YstackMocap*zhatMocap - UstackMocap).eval()): \n" << YstackMocap.cwiseProduct((-1*YstackMocap*zhatMocap - UstackMocap).eval()) << std::endl;
             //std::cout << "((-1*YstackMocap*zhatMocap - UstackMocap).eval()): \n" << ((-1*YstackMocap*zhatMocap - UstackMocap).eval()) << std::endl;
             //std::cout << "term2: " << term2 << std::endl;
+            msg.zHatDotTerm1 = term1;
+            msg.zHatDotTerm2 = term2;
+            debugZhatPub.publish(msg);
         }
         
         // Update
@@ -389,25 +466,44 @@ public:
         outputPub.publish(outputMsg);
     }
     
-    void calculateControl(Eigen::Vector3d pixels, Eigen::Quaterniond q, double alpha1, bool forMocap)
+    void calculateControl(Eigen::Vector3d pixels, Eigen::Quaterniond q, double alpha1, homography_vsc_cl::Debug& msg, bool forMocap)
     {
         // Signals
         Eigen::Vector3d m1 = camMat.inverse()*pixels;
         Eigen::Vector3d pe(pixels(0),pixels(1),-1*std::log(alpha1));
+        msg.m1.x = m1.x(); msg.m1.y = m1.y(); msg.m1.z = m1.z(); 
         
         // errors
         Eigen::Vector3d ev = pe - ped;
         Eigen::Quaterniond qTilde = qd.inverse()*q;
+        msg.qd.x = qd.x(); msg.qd.y = qd.y(); msg.qd.z = qd.z(); msg.qd.w = qd.w(); 
+        msg.ped.x = ped.x(); msg.ped.y = ped.y(); msg.ped.z = ped.z();
+        
+        bool firstRun = (forMocap ? firstMocap : firstHomog);
         
         // maintain continuity of q, and filter
         Eigen::Quaterniond qTildeLast = (forMocap ? qTildeLastMocap : qTildeLastHomog);
-        if ((qTildeLast.coeffs() - -1*qTilde.coeffs()).squaredNorm() < (qTildeLast.coeffs() - qTilde.coeffs()).squaredNorm()) { qTilde = Eigen::Quaterniond(-1*qTilde.coeffs()); }
-        if (forMocap) { qTildeLastMocap = qTilde; }
-        else
+        if ((qTildeLast.coeffs() - -1*qTilde.coeffs()).squaredNorm() < (qTildeLast.coeffs() - qTilde.coeffs()).squaredNorm()) 
+        { 
+            qTilde = Eigen::Quaterniond(-1*qTilde.coeffs()); 
+        }
+        
+        if (!firstRun)
         {
             qTilde = Eigen::Quaterniond((1-filterAlpha)*qTilde.coeffs() + filterAlpha*qTildeLast.coeffs());
+        }
+        
+        if (forMocap) 
+        { 
+            qTildeLastMocap = qTilde;
+        }
+        else
+        {
             qTildeLastHomog = qTilde;
         }
+        
+        msg.ev.x = ev.x(); msg.ev.y = ev.y(); msg.ev.z = ev.z();
+        msg.qTilde.x = qTilde.x(); msg.qTilde.y = qTilde.y(); msg.qTilde.z = qTilde.z(); msg.qTilde.w = qTilde.w(); 
         
         // Lv
         Eigen::Matrix3d camMatFactor = camMat;
@@ -415,14 +511,33 @@ public:
         Eigen::Matrix3d temp1 = Eigen::Matrix3d::Identity();
         temp1.topRightCorner<2,1>() = -1*m1.head<2>();
         Eigen::Matrix3d Lv = camMatFactor*temp1;
+        msg.LvCol1.x = Lv(0,0); msg.LvCol1.y = Lv(0,1); msg.LvCol1.z = Lv(0,2);
+        msg.LvCol2.x = Lv(1,0); msg.LvCol2.y = Lv(1,1); msg.LvCol2.z = Lv(1,2);
+        msg.LvCol3.x = Lv(2,0); msg.LvCol3.y = Lv(2,1); msg.LvCol3.z = Lv(2,2); 
         
         // Parameter estimate
         double zhat = (forMocap ? zhatMocap : zhatHomog);
         
         // control
+        Eigen::Vector3d vcLast = (forMocap ? vcLastMocap : vcLastHomog);
+        Eigen::Vector3d wcLast = (forMocap ? wcLastMocap : wcLastHomog);
         Eigen::Vector3d wc = -Kw*Eigen::Vector3d(qTilde.vec()) + qTilde.inverse()*wcd; // qTilde.inverse()*wcd rotates wcd to current camera frame, equivalent to qTilde^-1*wcd*qTilde in paper
+        if (!firstRun)
+        {
+            wc = (1-filterAlpha)*wc + filterAlpha*wcLast;
+        }
+        msg.wc.x = wc.x(); msg.wc.y = wc.y(); msg.wc.z = wc.z(); 
         Eigen::Vector3d phi = Lv*m1.cross(wc) - pedDot;
         Eigen::Vector3d vc = (1.0/alpha1)*Lv.inverse()*(Kv*ev + phi*zhat);
+        //Eigen::Vector3d vc = (1.0/alpha1)*Lv.inverse()*(Kv*ev + phi*zStar);
+        if (!firstRun)
+        {
+            vc = (1-filterAlpha)*vc + filterAlpha*vcLast;
+        }
+        msg.vc.x = vc.x(); msg.vc.y = vc.y(); msg.vc.z = vc.z();
+        msg.phi.x = phi.x(); msg.phi.y = phi.y(); msg.phi.z = phi.z(); 
+        msg.zHat = zhat;
+        msg.pedDot.x = pedDot.x(); msg.pedDot.y = pedDot.y(); msg.pedDot.z = pedDot.z();
         
         // transforming velocities to bebop body frame
         tf::StampedTransform tfCamera2Body;
@@ -444,6 +559,8 @@ public:
         {
             phi2 = Lv*m1.cross(wcActual) - pedDot;
             vc2 = vcActual;
+            msg.vcActual.x = vcActual.x(); msg.vcActual.y = vcActual.y(); msg.vcActual.z = vcActual.z(); 
+            msg.wcActual.x = wcActual.x(); msg.wcActual.y = wcActual.y(); msg.wcActual.z = wcActual.z(); 
         }
         else
         {
@@ -487,10 +604,15 @@ public:
                     Eigen::Vector3d PHI = 0.5*((phiBuffMocap.leftCols(mocapBuffSize-1) + phiBuffMocap.rightCols(mocapBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
                     Eigen::Vector3d scriptY = evBuffMocap.rightCols<1>() - evBuffMocap.leftCols<1>() - PHI;
                     Eigen::Vector3d scriptU = 0.5*((uBuffMocap.leftCols(mocapBuffSize-1) + uBuffMocap.rightCols(mocapBuffSize-1))*delTbuff.asDiagonal()).rowwise().sum();
+                    msg.PHI.x = PHI.x(); msg.PHI.y = PHI.y(); msg.PHI.z = PHI.z(); 
+                    msg.scriptY.x = scriptY.x(); msg.scriptY.y = scriptY.y(); msg.scriptY.z = scriptY.z(); 
+                    msg.scriptU.x = scriptU.x(); msg.scriptU.y = scriptU.y(); msg.scriptU.z = scriptU.z(); 
                     
                     // Add data to stack
                     int index;
                     double minVal = YstackMocap.colwise().squaredNorm().minCoeff(&index);
+                    msg.minValOld = minVal;
+                    msg.newVal = scriptY.squaredNorm();
                     //std::cout << "minVal: " << minVal << std::endl;
                     if (scriptY.squaredNorm() > minVal)
                     {
@@ -498,6 +620,8 @@ public:
                         UstackMocap.col(index) = scriptU;
                         //std::cout << "index: " << index << std::endl;
                     }
+                    minVal = YstackMocap.colwise().squaredNorm().minCoeff(&index);
+                    msg.minVal = minVal;
                 }
                 
                 // publish
@@ -535,11 +659,15 @@ public:
                     // Add data to stack
                     int index;
                     double minVal = YstackHomog.colwise().squaredNorm().minCoeff(&index);
+                    msg.minValOld = minVal;
+                    msg.newVal = scriptY.squaredNorm();
                     if (scriptY.squaredNorm() > minVal)
                     {
                         YstackHomog.col(index) = scriptY;
                         UstackHomog.col(index) = scriptU;
                     }
+                    minVal = YstackHomog.colwise().squaredNorm().minCoeff(&index);
+                    msg.minVal = minVal;
                 }
                 
                 // publish
@@ -566,8 +694,10 @@ public:
     {
         // time
         ros::Time timestamp = ros::Time::now();
-        double delT = timestamp.toSec() - desLastTime;
+        //double delT = timestamp.toSec() - desLastTime;
+        double delT = 1.0/desUpdateRate;
         desLastTime = timestamp.toSec();
+        //std::cout << "des time diff " << delT << std::endl;
         
         // update velocities
         Eigen::Vector3d vcd = qPanTilt*Eigen::Vector3d(2*M_PI*desRadius/desPeriod, 0, 0);
@@ -601,12 +731,54 @@ public:
         tf::Transform tfMarker2Ref = tfDes2Ref*tfMarker2Des;
         
         qd = Eigen::Quaterniond(tfDes2Ref.getRotation().getW(),tfDes2Ref.getRotation().getX(),tfDes2Ref.getRotation().getY(),tfDes2Ref.getRotation().getZ());
+        
+        // compare to last solution
+        if ((qdLast.coeffs() - -1*qd.coeffs()).squaredNorm() < (qdLast.coeffs() - qd.coeffs()).squaredNorm()) 
+        { 
+            qd = Eigen::Quaterniond(-1*qd.coeffs()); 
+        }
+        
         Eigen::Vector3d m1d(tfMarker2Des.getOrigin().getX()/tfMarker2Des.getOrigin().getZ(), tfMarker2Des.getOrigin().getY()/tfMarker2Des.getOrigin().getZ(), 1);
         Eigen::Vector3d p1d = camMat*m1d;
         double alpha1d = tfMarker2Ref.getOrigin().getZ()/tfMarker2Des.getOrigin().getZ();
         ped << p1d(0), p1d(1), -1*std::log(alpha1d);
-        pedDot = (ped - pedLast)/delT;
+        homography_vsc_cl::Debug msg;
+        if (!firstDes)
+        {
+            // Lvd
+            Eigen::Matrix3d camMatFactor = camMat;
+            camMatFactor.block<2,1>(0,2) << 0, 0;
+            Eigen::Matrix3d temp1 = Eigen::Matrix3d::Identity();
+            temp1.topRightCorner<2,1>() = -1*m1d.head<2>();
+            Eigen::Matrix3d Lvd = camMatFactor*temp1;
+            pedDot = alpha1d/tfMarker2Ref.getOrigin().getZ()*Lvd*vcd + Lvd*m1d.cross(wcd);
+            //pedDot = (ped - pedLast)/delT;
+            msg.delPed.x = (ped - pedLast).x(); msg.delPed.y = (ped - pedLast).y(); msg.delPed.z = (ped - pedLast).z(); 
+            if (!secondDes)
+            {
+                pedDot = (1-filterAlpha)*pedDot + filterAlpha*pedDotLast;
+            }
+            pedDotLast = pedDot;
+            secondDes = false;
+        }
+        firstDes = false;
         pedLast = ped;
+        qdLast = qd;
+        
+        //debug
+        
+        msg.header.stamp = timestamp;
+        msg.q.x = qd.x(); msg.q.y = qd.y(); msg.q.z = qd.z(); msg.q.w = qd.w();
+        msg.alpha = alpha1d;
+        msg.newPixels.pr.x = p1d.x(); msg.newPixels.pr.y = p1d.y();
+        msg.m1.x = m1d.x(); msg.m1.y = m1d.y(); msg.m1.z = m1d.z(); 
+        msg.vc.x = vcd.x(); msg.vc.y = vcd.y(); msg.vc.z = vcd.z();
+        msg.wc.x = wcd.x(); msg.wc.y = wcd.y(); msg.wc.z = wcd.z();
+        msg.pedLast.x = pedLast.x(); msg.pedLast.y = pedLast.y(); msg.pedLast.z = pedLast.z();
+        msg.delT = delT;
+        
+        debugDesPub.publish(msg);
+
     }
     
     // xbox controller callback, for setting reference

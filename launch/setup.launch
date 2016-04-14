@@ -6,6 +6,15 @@
   <!-- mocap node -->
   <include file="$(find mocap_optitrack)/launch/mocap.launch"/>
   
+  <!-- joystick -->
+  <node pkg="joy" type="joy_node" name="joy_node">
+    <param name="dev" value="/dev/input/js1"/>
+  </node>
+  
+  <!-- joystick control node -->
+  <node pkg="homography_vsc_cl" type="joy_stick_arbiter" name="joy_stick_arbiter" output="screen">
+  </node>
+  
   <!-- bebop velocity publisher -->
   <node pkg="switch_vis_exp" type="filter_node" name="bebop_velocity_filter" ns="bebop_image" />
   
@@ -22,11 +31,6 @@
     <remap from="robot_pose" to="bebop_image/pose" />
   </node>
   
-  <!-- joystick -->
-  <node pkg="joy" type="joy_node" name="joy_node">
-    <param name="dev" value="/dev/input/js1"/>
-  </node>
-  
   <!-- image processing to find markers -->
   <node pkg="homography_vsc_cl" type="image_processing_node" name="image_processing_node" output="screen" />
   
@@ -36,8 +40,7 @@
   <!-- controller -->
   <!-- <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" /> -->
   
-   <!-- joystick control node -->
-  <node pkg="homography_vsc_cl" type="joy_stick_arbiter" name="joy_stick_arbiter" output="screen">
-  </node>  
+  <!-- joystick control node -->
+  <!-- <node pkg="homography_vsc_cl" type="joy_stick_arbiter" name="joy_stick_arbiter" output="screen"/> -->
   
 </launch>
