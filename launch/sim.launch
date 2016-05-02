@@ -1,13 +1,42 @@
 <launch>
+    
+  <node pkg="tf" type="static_transform_publisher" name="ugv1_broadcaster" args="-0.25 -0.25 0.0 0.0 0.0 0.0 1.0 world ugv1 300" />
+  <node pkg="tf" type="static_transform_publisher" name="ugv2_broadcaster" args="-0.25 0.25 0.0 0.0 0.0 0.0 1.0 world ugv2 300" />
+  <node pkg="tf" type="static_transform_publisher" name="ugv3_broadcaster" args="0.25 0.25 0.0 0.0 0.0 0.0 1.0 world ugv3 300" />
+  <node pkg="tf" type="static_transform_publisher" name="ugv4_broadcaster" args="0.25 -0.25 0.0 0.0 0.0 0.0 1.0 world ugv4 300" />
+<!--
+  <node pkg="tf" type="static_transform_publisher" name="image_wrt_bebop" args="0.0887462 -0.00120357 -0.0590809 -0.673323 0.679824 -0.19463 0.215791 bebop bebop_image 300" />
+-->
+  
   <!-- joystick -->
   <node pkg="joy" type="joy_node" name="joy_node">
     <param name="dev" value="/dev/input/js1"/>
   </node>
   
   <!-- sim -->
-  <node pkg="homography_vsc_cl" type="sim_node" name="sim_node" output="screen" />
+  <node pkg="homography_vsc_cl" type="vsc_sim_node" name="vsc_sim_node" output="screen" >
+      <param name="updateRate" value="30.0" />
+  </node>
   
   <!-- controller -->
-  <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" />
+  <!-- controller -->
+  <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" >
+    <param name="kvXY" value="10.0" />
+    <param name="kvZ" value="10.0" />
+    <param name="kw" value="10.0" />
+    <param name="gamma1" value="0.00001" />
+    <param name="gamma2" value="100.0" />
+    <param name="intWindowTime" value="0.6" />
+    <param name="stackSize" value="200" />
+    <param name="mocapUpdateRate" value="300.0" />
+    <param name="zhatUpdateRate" value="300.0" />
+    <param name="desUpdateRate" value="100.0" />
+    <param name="useActualVelocities" value="true" />
+    <param name="desRadius" value="2.0" />
+    <param name="desPeriod" value="45.0" />
+    <param name="desHeight" value="1.5" />
+    <param name="filterAlpha" value="0.0" />
+    <param name="useZstar" value="false" />
+  </node>
   
 </launch>

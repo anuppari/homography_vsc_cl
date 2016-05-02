@@ -30,9 +30,11 @@ class Sim
     tf::TransformBroadcaster tfbr;
     tf::TransformListener tfl;
     ros::Timer integrateTimer;
+    ros::Timer homogMsgTimer;
     
     // Parameters
     double intTime;
+    double updateRate;
     cv::Mat camMat;
     cv::Mat distCoeffs;
     std::string cameraName;
@@ -40,12 +42,14 @@ class Sim
     bool useHomog;
     bool useMocap;
     double lastTime;
+    bool runAutonomous;
     
     // States
     Eigen::Vector3d camPos;
     Eigen::Quaterniond camOrient;
     Eigen::Vector3d linVel;
     Eigen::Vector3d angVel;
+    homography_vsc_cl::HomogDecompSolns homogMsg;
     
 public:
     Sim()
@@ -53,6 +57,7 @@ public:
         // Get Parameters
         ros::NodeHandle nhp("~");
         nhp.param<std::string>("cameraName",cameraName,"bebop_image");
+        nhp.param<double>("updateRate",updateRate,300.0);
         
         // Publishers
         camInfoPub = nh.advertise<sensor_msgs::CameraInfo>("bebop/camera_info",10,true); // latched
@@ -69,6 +74,7 @@ public:
         angVel = Eigen::Vector3d::Zero();
         useHomog = false;
         useMocap = false;
+        runAutonomous = false;
         
         // Initialize Parameters
         intTime = 1.0/300.0;
@@ -94,43 +100,68 @@ public:
         // Integrator
         joySub = nh.subscribe("joy",1,&Sim::joyCB,this);
         integrateTimer = nh.createTimer(ros::Duration(intTime),&Sim::integrateCB,this,false);
+        homogMsgTimer = nh.createTimer(ros::Duration(1.0/updateRate),&Sim::homogMsgCB,this,false);
+
+    }
+    
+    void homogMsgCB(const ros::TimerEvent& event)
+    {
+        try
+        {
+            homogPub.publish(homogMsg);
+        }
+        catch(tf::TransformException ex)
+        {
+            return;
+        }
     }
     
     void integrateCB(const ros::TimerEvent& event)
     {
-        
-        // Integrate camera pose
-        camPos += camOrient*linVel*intTime; // convert from body to world and integrate
-        Eigen::Vector4d camOrientTemp(camOrient.w(),camOrient.x(),camOrient.y(),camOrient.z());
-        camOrientTemp += 0.5*diffMat(camOrient)*angVel*intTime;
-        camOrient = Eigen::Quaterniond(camOrientTemp(0),camOrientTemp(1),camOrientTemp(2),camOrientTemp(3));
-        camOrient.normalize();
-        
-        // Publish camera tf
-        tf::Transform tfCam;
-        tfCam.setOrigin(tf::Vector3(camPos(0),camPos(1),camPos(2)));
-        tfCam.setRotation(tf::Quaternion(camOrient.x(),camOrient.y(),camOrient.z(),camOrient.w()));
-        tfbr.sendTransform(tf::StampedTransform(tfCam,event.current_real,"world",cameraName));
-        
-        // Publish red marker tf
-        tf::Transform tfMarker;
-        tfMarker.setOrigin(tf::Vector3(0.2,0.2,0));
-        tfMarker.setRotation(tf::Quaternion(0,0,0,1));
-        tfbr.sendTransform(tf::StampedTransform(tfMarker,event.current_real+ros::Duration(0.01),"world","ugv1"));
-        
-        // publish velocity
-        geometry_msgs::TwistStamped twistMsg;
-        twistMsg.header.stamp = event.current_real;
-        twistMsg.twist.linear.x = linVel.x();
-        twistMsg.twist.linear.y = linVel.y();
-        twistMsg.twist.linear.z = linVel.z();
-        twistMsg.twist.angular.x = angVel.x();
-        twistMsg.twist.angular.y = angVel.y();
-        twistMsg.twist.angular.z = angVel.z();
-        velPub.publish(twistMsg);
-        
         try
         {
+            // Integrate camera pose
+            camPos += camOrient*linVel*intTime; // convert from body to world and integrate
+            Eigen::Vector4d camOrientTemp(camOrient.w(),camOrient.x(),camOrient.y(),camOrient.z());
+            camOrientTemp += 0.5*diffMat(camOrient)*angVel*intTime;
+            camOrient = Eigen::Quaterniond(camOrientTemp(0),camOrientTemp(1),camOrientTemp(2),camOrientTemp(3));
+            camOrient.normalize();
+            
+            // camera tf
+            tf::Transform tfCam;
+            tfCam.setOrigin(tf::Vector3(camPos(0),camPos(1),camPos(2)));
+            tfCam.setRotation(tf::Quaternion(camOrient.x(),camOrient.y(),camOrient.z(),camOrient.w()));
+            tfbr.sendTransform(tf::StampedTransform(tfCam,event.current_real,"world",cameraName));
+            
+            // bebop tf
+            //tf::StampedTransform cameraWrtBebop;
+            //tfl.waitForTransform("bebop", "bebop_image", ros::Time(0), ros::Duration(1));
+            //tfl.lookupTransform("bebop", "bebop_image", ros::Time(0), cameraWrtBebop);
+            //tf::Transform tfBebop = tfCam*cameraWrtBebop.inverse();           
+            tfbr.sendTransform(tf::StampedTransform(tfCam,event.current_real,"world","bebop"));
+            
+            //// red marker tf
+            tf::Transform tfMarker;
+            //tfMarker.setOrigin(tf::Vector3(0.2,0.2,0));
+            //tfMarker.setRotation(tf::Quaternion(0,0,0,1));
+            //tfbr.sendTransform(tf::StampedTransform(tfMarker,event.current_real+ros::Duration(0.01),"world","ugv1"));
+            tf::StampedTransform turtleWrtWorldTemp;
+            tfl.waitForTransform("world", "ugv1", ros::Time(0), ros::Duration(1));
+            tfl.lookupTransform("world", "ugv1", ros::Time(0), turtleWrtWorldTemp);
+            tfMarker = turtleWrtWorldTemp;
+            
+            // publish velocity
+            geometry_msgs::TwistStamped twistMsg;
+            twistMsg.header.stamp = event.current_real;
+            twistMsg.twist.linear.x = linVel.x();
+            twistMsg.twist.linear.y = linVel.y();
+            twistMsg.twist.linear.z = linVel.z();
+            twistMsg.twist.angular.x = angVel.x();
+            twistMsg.twist.angular.y = angVel.y();
+            twistMsg.twist.angular.z = angVel.z();
+            velPub.publish(twistMsg);
+        
+        
             tf::StampedTransform tfRef;
             tfl.waitForTransform("world",cameraName+"_ref",ros::Time(0),ros::Duration(0.01));
             tfl.lookupTransform("world",cameraName+"_ref",ros::Time(0),tfRef);
@@ -150,7 +181,6 @@ public:
             tf::Quaternion ref2ImQ = tfIm2Ref.getRotation().inverse();
             
             // Construct homog message and publish
-            homography_vsc_cl::HomogDecompSolns homogMsg;
             homogMsg.header.stamp = ros::Time::now();
             homogMsg.pose1.position.x = ref2ImT.getX();
             homogMsg.pose1.position.y = ref2ImT.getY();
@@ -168,7 +198,7 @@ public:
             homogMsg.pose2 = homogMsg.pose1;
             homogMsg.n2 = homogMsg.n1;
             homogMsg.decomp_successful = true;
-            homogPub.publish(homogMsg);
+            
         }
         catch(tf::TransformException ex)
         {
@@ -198,27 +228,53 @@ public:
     {
         if (joyMsg->buttons[5]) // RB - use homog
         {
-            useHomog = true;
-            useMocap = false;
+            if (!runAutonomous)
+            {
+                useHomog = true;
+                useMocap = false;
+                runAutonomous = true;
+            }
+            else
+            {
+                useHomog = false;
+                useMocap = false;
+                runAutonomous = false;
+            }
+            
         }
         else if (joyMsg->buttons[4]) // LB - use mocap
         {
-            useHomog = false;
-            useMocap = true;
+            if (!runAutonomous)
+            {
+                useHomog = false;
+                useMocap = true;
+                runAutonomous = true;
+            }
+            else
+            {
+                useHomog = false;
+                useMocap = false;
+                runAutonomous = false;
+            }
+            
         }
         else if (joyMsg->buttons[1]) // b - reset target
         {
             useHomog = false;
             useMocap = false;
+            runAutonomous = false;
             camPos << 0,0,3;
             camOrient = Eigen::Quaterniond(0,1,1,0);
         }
         else
         {
-            useHomog = false;
-            useMocap = false;
-            linVel = 3*Eigen::Vector3d(-1*joy_deadband(joyMsg->axes[0]), joy_deadband(-1*joyMsg->axes[1]), joy_deadband(joyMsg->axes[7]));
-            angVel = 2*Eigen::Vector3d(-1*joy_deadband(joyMsg->axes[4]), joy_deadband(joyMsg->axes[3]), joy_deadband(joyMsg->axes[2]-joyMsg->axes[5]));
+            if (!runAutonomous)
+            {
+                useHomog = false;
+                useMocap = false;
+                linVel = 3*Eigen::Vector3d(-1*joy_deadband(joyMsg->axes[0]), joy_deadband(-1*joyMsg->axes[1]), joy_deadband(joyMsg->axes[7]));
+                angVel = 2*Eigen::Vector3d(-1*joy_deadband(joyMsg->axes[4]), joy_deadband(joyMsg->axes[3]), joy_deadband(joyMsg->axes[2]-joyMsg->axes[5]));
+            }
         }
     }
     
