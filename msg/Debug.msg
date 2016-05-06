@@ -11,9 +11,9 @@ geometry_msgs/Vector3 ev
 geometry_msgs/Vector3 vc
 geometry_msgs/Vector3 wc
 geometry_msgs/Vector3 phi
-geometry_msgs/Vector3 LvCol1
-geometry_msgs/Vector3 LvCol2
-geometry_msgs/Vector3 LvCol3
+geometry_msgs/Vector3 LvRow1
+geometry_msgs/Vector3 LvRow2
+geometry_msgs/Vector3 LvRow3
 geometry_msgs/Vector3 pedDot
 geometry_msgs/Vector3 ped
 float64 desLastTime
@@ -34,3 +34,14 @@ geometry_msgs/Vector3 scriptY
 geometry_msgs/Vector3 scriptU
 float64 zHatDotTerm1
 float64 zHatDotTerm2
+geometry_msgs/Transform desImageWrtImage
+geometry_msgs/Transform desImageWrtImageZhat
+geometry_msgs/Vector3 n
+float64[9] H
+geometry_msgs/Vector3 t
+geometry_msgs/Vector3 phiTerm1
+geometry_msgs/Vector3 vcterm1
+geometry_msgs/Vector3 vcterm2
+geometry_msgs/Vector3 pixelPredict
+geometry_msgs/Quaternion qPredict
+float64 alphaPredict

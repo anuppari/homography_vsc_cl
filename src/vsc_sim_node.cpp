@@ -14,6 +14,7 @@
 #include <Eigen/Dense>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/calib3d/calib3d.hpp>
+#include <random>
 
 Eigen::Matrix<double,4,3> diffMat(const Eigen::Quaterniond);
 
@@ -43,6 +44,8 @@ class Sim
     bool useMocap;
     double lastTime;
     bool runAutonomous;
+    bool addNoise;
+    bool addDelay;
     
     // States
     Eigen::Vector3d camPos;
@@ -50,14 +53,45 @@ class Sim
     Eigen::Vector3d linVel;
     Eigen::Vector3d angVel;
     homography_vsc_cl::HomogDecompSolns homogMsg;
+    std::deque<homography_vsc_cl::HomogDecompSolns> homogMsgDeque;
+    
+    std::default_random_engine pixelNoiseGenerator;
+    std::normal_distribution<double> *pixelNoiseDistribution;
+    std::default_random_engine alpha1NoiseGenerator;
+    std::normal_distribution<double> *alpha1NoiseDistribution;
+    std::default_random_engine linVelNoiseGenerator;
+    std::normal_distribution<double> *linVelNoiseDistribution;
+    std::default_random_engine angVelNoiseGenerator;
+    std::normal_distribution<double> *angVelNoiseDistribution;
     
 public:
     Sim()
     {
+        double pixelNoiseMean;
+        double alpha1NoiseMean;
+        double linVelNoiseMean;
+        double angVelNoiseMean;
+        double pixelNoiseStd;
+        double alpha1NoiseStd;
+        double linVelNoiseStd;
+        double angVelNoiseStd;
         // Get Parameters
         ros::NodeHandle nhp("~");
         nhp.param<std::string>("cameraName",cameraName,"bebop_image");
         nhp.param<double>("updateRate",updateRate,300.0);
+        nhp.param<bool>("addNoise",addNoise,false);
+        nhp.param<double>("pixelNoiseMean",pixelNoiseMean,0.0);
+        nhp.param<double>("alpha1NoiseMean",alpha1NoiseMean,0.0);
+        nhp.param<double>("linVelNoiseMean",linVelNoiseMean,0.0);
+        nhp.param<double>("angVelNoiseMean",angVelNoiseMean,0.0);
+        nhp.param<double>("pixelNoiseStd",pixelNoiseStd,1.0);
+        nhp.param<double>("alpha1NoiseStd",alpha1NoiseStd,1.0);
+        nhp.param<double>("linVelNoiseStd",linVelNoiseStd,0.1);
+        nhp.param<double>("angVelNoiseStd",angVelNoiseStd,0.01);
+        pixelNoiseDistribution = new std::normal_distribution<double> (pixelNoiseMean,pixelNoiseStd);
+        alpha1NoiseDistribution = new std::normal_distribution<double> (alpha1NoiseMean,alpha1NoiseStd);
+        linVelNoiseDistribution = new std::normal_distribution<double> (linVelNoiseMean,linVelNoiseStd);
+        angVelNoiseDistribution = new std::normal_distribution<double> (angVelNoiseMean,angVelNoiseStd);
         
         // Publishers
         camInfoPub = nh.advertise<sensor_msgs::CameraInfo>("bebop/camera_info",10,true); // latched
@@ -82,7 +116,7 @@ public:
         
         // Initialize and Publish camera info
         sensor_msgs::CameraInfo camInfoMsg;
-        double K[] = {1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0};
+        double K[] = {386.970462448116, 0, 314.7797237112082, 0, 389.1224577493467, 182.7562154534974, 0, 0, 1};
         double D[] = {0.0,0.0,0.0,0.0,0.0};
         std::vector<double> Dvec(D,D + sizeof(D)/sizeof(D[0]));
         for (int i = 0; i < 9; i++)
@@ -153,14 +187,25 @@ public:
             // publish velocity
             geometry_msgs::TwistStamped twistMsg;
             twistMsg.header.stamp = event.current_real;
-            twistMsg.twist.linear.x = linVel.x();
-            twistMsg.twist.linear.y = linVel.y();
-            twistMsg.twist.linear.z = linVel.z();
-            twistMsg.twist.angular.x = angVel.x();
-            twistMsg.twist.angular.y = angVel.y();
-            twistMsg.twist.angular.z = angVel.z();
+            if (addNoise)
+            {
+                twistMsg.twist.linear.x = linVel.x() + (*linVelNoiseDistribution)(linVelNoiseGenerator);
+                twistMsg.twist.linear.y = linVel.y() + (*linVelNoiseDistribution)(linVelNoiseGenerator);
+                twistMsg.twist.linear.z = linVel.z() + (*linVelNoiseDistribution)(linVelNoiseGenerator);
+                twistMsg.twist.angular.x = angVel.x() + (*angVelNoiseDistribution)(angVelNoiseGenerator);
+                twistMsg.twist.angular.y = angVel.y() + (*angVelNoiseDistribution)(angVelNoiseGenerator);
+                twistMsg.twist.angular.z = angVel.z() + (*angVelNoiseDistribution)(angVelNoiseGenerator);
+            }
+            else
+            {
+                twistMsg.twist.linear.x = linVel.x();
+                twistMsg.twist.linear.y = linVel.y();
+                twistMsg.twist.linear.z = linVel.z();
+                twistMsg.twist.angular.x = angVel.x();
+                twistMsg.twist.angular.y = angVel.y();
+                twistMsg.twist.angular.z = angVel.z();
+            }
             velPub.publish(twistMsg);
-        
         
             tf::StampedTransform tfRef;
             tfl.waitForTransform("world",cameraName+"_ref",ros::Time(0),ros::Duration(0.01));
@@ -192,9 +237,18 @@ public:
             homogMsg.n1.x = nStarVec.getX();
             homogMsg.n1.y = nStarVec.getY();
             homogMsg.n1.z = nStarVec.getZ();
-            homogMsg.alphar = tfMarker2Ref.getOrigin().getZ()/tfMarker2Im.getOrigin().getZ();
-            homogMsg.newPixels.pr.x = pixels.at<double>(0,0);
-            homogMsg.newPixels.pr.y = pixels.at<double>(1,0);
+            if (addNoise)
+            {
+                homogMsg.newPixels.pr.x = pixels.at<double>(0,0) + (*pixelNoiseDistribution)(pixelNoiseGenerator);
+                homogMsg.newPixels.pr.y = pixels.at<double>(1,0) + (*pixelNoiseDistribution)(pixelNoiseGenerator);
+                homogMsg.alphar = tfMarker2Ref.getOrigin().getZ()/tfMarker2Im.getOrigin().getZ() + (*alpha1NoiseDistribution)(alpha1NoiseGenerator);
+            }
+            else
+            {
+                homogMsg.newPixels.pr.x = pixels.at<double>(0,0);
+                homogMsg.newPixels.pr.y = pixels.at<double>(1,0);
+                homogMsg.alphar = tfMarker2Ref.getOrigin().getZ()/tfMarker2Im.getOrigin().getZ();
+            }
             homogMsg.pose2 = homogMsg.pose1;
             homogMsg.n2 = homogMsg.n1;
             homogMsg.decomp_successful = true;

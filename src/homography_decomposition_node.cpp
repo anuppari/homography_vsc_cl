@@ -222,6 +222,16 @@ public:
                     // Construct message
                     msg.newPixels = points;
                     msg.refPixels = refPointsMsg;
+                    msg.H[0] = H.at<double>(0,0);
+                    msg.H[1] = H.at<double>(0,1);
+                    msg.H[2] = H.at<double>(0,2);
+                    msg.H[3] = H.at<double>(1,0);
+                    msg.H[4] = H.at<double>(1,1);
+                    msg.H[5] = H.at<double>(1,2);
+                    msg.H[6] = H.at<double>(2,0);
+                    msg.H[7] = H.at<double>(2,1);
+                    msg.H[8] = H.at<double>(2,2);
+                    
                     msg.pose1.position.x = T[goodSolutionIndex[0]].at<double>(0,0);
                     msg.pose1.position.y = T[goodSolutionIndex[0]].at<double>(1,0);
                     msg.pose1.position.z = T[goodSolutionIndex[0]].at<double>(2,0);

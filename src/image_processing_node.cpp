@@ -1,6 +1,7 @@
 #include <ros/ros.h>
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.h>
+#include <tf/transform_listener.h>
 #include <image_geometry/pinhole_camera_model.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
@@ -14,9 +15,10 @@ class ImageProcessing
 {
     // ROS stuff
     ros::NodeHandle nh;
+    tf::TransformListener tfl;
     image_transport::ImageTransport it;
     image_transport::Subscriber imageSub;
-    image_transport::Publisher imagePub;
+    image_transport::Publisher imagePub, imageThesholdPub;
     ros::Subscriber camInfoSub;
     ros::Publisher pixelPub;
     
@@ -30,6 +32,8 @@ class ImageProcessing
     int erodeKernalSize;
     int dilateKernalSize;
     
+    bool useMocap;
+    
 public:
     ImageProcessing() : it(nh)
     {
@@ -40,6 +44,7 @@ public:
         nhp.param<int>("blurKernalSize", blurKernalSize, 5);
         nhp.param<int>("erodeKernalSize", erodeKernalSize, 5);
         nhp.param<int>("dilateKernalSize", dilateKernalSize, 3);
+        nhp.param<bool>("useMocap", useMocap, false);
         
         // Get camera parameters
         std::cout << "Getting camera parameters on topic: "+cameraName+"/camera_info" << std::endl;
@@ -54,6 +59,7 @@ public:
         
         // Publisher and subscriber
         imagePub = it.advertise(cameraName+"/image_processed",10);
+        imageThesholdPub = it.advertise(cameraName+"/image_threshold",10);
         pixelPub = nh.advertise<homography_vsc_cl::ImagePoints>("markerPoints",10);
         imageSub = it.subscribe(cameraName+"/image_raw", 1, &ImageProcessing::imageCB,this);
     }
@@ -98,10 +104,10 @@ public:
         
         // Threshold color
         // order is {lower hue, upper hue, lower saturation, upper saturation, lower value, upper value}
-        int redThresh[6] = {155, 180, 25, 255, 80, 255};
-        int greenThresh[6] = {65, 90, 40, 255, 40, 255};
-        int cyanThresh[6] = {95, 105, 60, 255, 150, 255};
-        int purpleThresh[6] = {110, 135, 30, 255, 50, 255};
+        int redThresh[6] = {170, 5, 50, 255, 150, 255};
+        int greenThresh[6] = {70, 89, 50, 255, 100, 255};
+        int cyanThresh[6] = {90, 114, 50, 255, 150, 255};
+        int purpleThresh[6] = {110, 145, 30, 255, 150, 255};
         cv::Mat redMask;
         cv::Mat greenMask;
         cv::Mat cyanMask;
@@ -126,23 +132,72 @@ public:
         bool foundPurple = getCenter(purpleMask, purpleCenter, purpleRadius);
         
         // Draw circles
-        if (foundRed) { cv::circle(image,redCenter,redRadius,cv::Scalar(0, 0, 255),2); }
-        if (foundGreen) { cv::circle(image,greenCenter,greenRadius,cv::Scalar(0, 255, 0),2); }
-        if (foundCyan) { cv::circle(image,cyanCenter,cyanRadius,cv::Scalar(255, 255, 0),2); }
-        if (foundPurple) { cv::circle(image,purpleCenter,purpleRadius,cv::Scalar(255, 0, 255),2); }
+        if (foundRed) { cv::circle(image,redCenter,redRadius,cv::Scalar(0, 0, 255),2); cv::circle(image,redCenter,2,cv::Scalar(0, 0, 255),2);}
+        if (foundGreen) { cv::circle(image,greenCenter,greenRadius,cv::Scalar(0, 255, 0),2); cv::circle(image,greenCenter,2,cv::Scalar(0, 255, 0),2); }
+        if (foundCyan) { cv::circle(image,cyanCenter,cyanRadius,cv::Scalar(255, 255, 0),2); cv::circle(image,cyanCenter,2,cv::Scalar(255, 255, 0),2); }
+        if (foundPurple) { cv::circle(image,purpleCenter,purpleRadius,cv::Scalar(255, 0, 255),2); cv::circle(image,purpleCenter,2,cv::Scalar(255, 0, 255),2); }
+        
+        cv::Mat p1, p2, p3, p4;
+        
+        try
+        {
+            tf::StampedTransform redWrtCamera, greenWrtCamera, cyanWrtCamera, purpleWrtCamera;
+            tfl.waitForTransform("bebop_image", "ugv1", ros::Time(0), ros::Duration(0.1));
+            tfl.lookupTransform("bebop_image", "ugv1", ros::Time(0), redWrtCamera);
+            tfl.waitForTransform("bebop_image", "ugv2", ros::Time(0), ros::Duration(0.1));
+            tfl.lookupTransform("bebop_image", "ugv2", ros::Time(0), greenWrtCamera);
+            tfl.waitForTransform("bebop_image", "ugv3", ros::Time(0), ros::Duration(0.1));
+            tfl.lookupTransform("bebop_image", "ugv3", ros::Time(0), cyanWrtCamera);
+            tfl.waitForTransform("bebop_image", "ugv4", ros::Time(0), ros::Duration(0.1));
+            tfl.lookupTransform("bebop_image", "ugv4", ros::Time(0), purpleWrtCamera);
+            cv::Mat m1Bar = cv::Mat::zeros(3,1,CV_64F), m2Bar = cv::Mat::zeros(3,1,CV_64F), m3Bar = cv::Mat::zeros(3,1,CV_64F), m4Bar = cv::Mat::zeros(3,1,CV_64F);
+            m1Bar.at<double>(0,0) = redWrtCamera.getOrigin().getX(); m1Bar.at<double>(1,0) = redWrtCamera.getOrigin().getY(); m1Bar.at<double>(2,0) = redWrtCamera.getOrigin().getZ();
+            m2Bar.at<double>(0,0) = greenWrtCamera.getOrigin().getX(); m2Bar.at<double>(1,0) = greenWrtCamera.getOrigin().getY(); m2Bar.at<double>(2,0) = greenWrtCamera.getOrigin().getZ();
+            m3Bar.at<double>(0,0) = cyanWrtCamera.getOrigin().getX(); m3Bar.at<double>(1,0) = cyanWrtCamera.getOrigin().getY(); m3Bar.at<double>(2,0) = cyanWrtCamera.getOrigin().getZ();
+            m4Bar.at<double>(0,0) = purpleWrtCamera.getOrigin().getX(); m4Bar.at<double>(1,0) = purpleWrtCamera.getOrigin().getY(); m4Bar.at<double>(2,0) = purpleWrtCamera.getOrigin().getZ();
+            p1 = camMat*((1/m1Bar.at<double>(2,0))*m1Bar);
+            p2 = camMat*((1/m2Bar.at<double>(2,0))*m2Bar);
+            p3 = camMat*((1/m3Bar.at<double>(2,0))*m3Bar);
+            p4 = camMat*((1/m4Bar.at<double>(2,0))*m4Bar);
+            cv::circle(image,cv::Point2d(p1.at<double>(0,0),p1.at<double>(1,0)),2,cv::Scalar(0,0,100),2);
+            cv::circle(image,cv::Point2d(p2.at<double>(0,0),p2.at<double>(1,0)),2,cv::Scalar(0,100,0),2);
+            cv::circle(image,cv::Point2d(p3.at<double>(0,0),p3.at<double>(1,0)),2,cv::Scalar(100,100,0),2);
+            cv::circle(image,cv::Point2d(p4.at<double>(0,0),p4.at<double>(1,0)),2,cv::Scalar(100,0,100),2);
+        }
+        catch (tf::TransformException ex)
+        {
+            std::cout << "failed to set desired" << std::endl;
+        }
+        
         
         // Publish image
         cv_ptr->image = image;
         imagePub.publish(cv_ptr->toImageMsg());
+        //std::cout << "hi" << std::endl;
+        cv::Mat imageBinary;
+        cv::cvtColor(redMask + greenMask + cyanMask + purpleMask,imageBinary,CV_GRAY2BGR);
+        cv_ptr->image = imageBinary;
+        imageThesholdPub.publish(cv_ptr->toImageMsg());
         
         // Publish points
         homography_vsc_cl::ImagePoints pointsMsg;
         pointsMsg.header.stamp = msg->header.stamp;
-        pointsMsg.pr.x = redCenter.x;       pointsMsg.pr.y = redCenter.y;
-        pointsMsg.pg.x = greenCenter.x;     pointsMsg.pg.y = greenCenter.y;
-        pointsMsg.pc.x = cyanCenter.x;      pointsMsg.pc.y = cyanCenter.y;
-        pointsMsg.pp.x = purpleCenter.x;    pointsMsg.pp.y = purpleCenter.y;
+        if (!useMocap)
+        {
+            pointsMsg.pr.x = redCenter.x;       pointsMsg.pr.y = redCenter.y;
+            pointsMsg.pg.x = greenCenter.x;     pointsMsg.pg.y = greenCenter.y;
+            pointsMsg.pc.x = cyanCenter.x;      pointsMsg.pc.y = cyanCenter.y;
+            pointsMsg.pp.x = purpleCenter.x;    pointsMsg.pp.y = purpleCenter.y;
+        }
+        else
+        {
+            pointsMsg.pr.x = p1.at<double>(0,0);    pointsMsg.pr.y = p1.at<double>(1,0);
+            pointsMsg.pg.x = p2.at<double>(0,0);    pointsMsg.pg.y = p2.at<double>(1,0);
+            pointsMsg.pc.x = p3.at<double>(0,0);    pointsMsg.pc.y = p3.at<double>(1,0);
+            pointsMsg.pp.x = p4.at<double>(0,0);    pointsMsg.pp.y = p4.at<double>(1,0);
+        }
         pointsMsg.features_found = foundRed && foundGreen && foundCyan && foundPurple;
+        
         pixelPub.publish(pointsMsg);
     }
     

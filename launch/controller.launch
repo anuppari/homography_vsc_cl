@@ -1,20 +1,44 @@
 <launch>
   <!-- controller -->
   <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" >
-    <param name="kvXY" value="2.0" />
-    <param name="kvZ" value="0.75" />
-    <param name="kw" value="0.5" />
+    <param name="kvXY" value="0.5" />
+    <param name="kvZ" value="0.5" />
+    <param name="kw" value="0.75" />
     <param name="gamma1" value="0.00001" />
-    <param name="gamma2" value="1.0" />
-    <param name="intWindowTime" value="0.6" />
+    <param name="gamma2" value="0.1" />
+    <param name="intWindowTime" value="3.0" />
     <param name="stackSize" value="200" />
     <param name="mocapUpdateRate" value="300.0" />
     <param name="zhatUpdateRate" value="300.0" />
     <param name="desUpdateRate" value="100.0" />
     <param name="useActualVelocities" value="true" />
     <param name="desRadius" value="1.0" />
-    <param name="desPeriod" value="45.0" />
-    <param name="desHeight" value="1.5" />
+    <param name="desPeriod" value="40.0" />
+    <param name="desHeight" value="1.8" />
     <param name="filterAlpha" value="0.0" />
+    <param name="useZstar" value="true" />
+    <param name="controlHistoryStack" value="false" />
+    <param name="fillHistoryStackBegin" value="false" />
+    <param name="filterVc" value="0.0" />
+    <param name="usePredictor" value="false" />
+    <param name="predictorTimeWindow" value="0.3" />
+    <param name="homogUpdateRate" value="30.0" />
   </node>
+  
+  <!-- experiment save -->
+  <node pkg="homography_vsc_cl" type="experimentSaveNode" name="experimentSaveNode" output="screen" >
+    <param name="saveExperiment" value="true" />
+    <param name="saveExperimentFilename" value="/home/ncr/ncr_ws/src/homography_vsc_cl/experiments/experiment0.txt" />    
+  </node>
+  
+  <!-- Start the camera recorder -->
+<!--
+  <node pkg="image_view" type="video_recorder" name="video_recorder">
+      <remap from="image" to="/bebop/image_raw"/>
+      <param name="fps" value="30"/>
+      <param name="filename" value="/home/ncr/ncr_ws/experiment0.avi"/>
+      <param name="max_depth_range" value="0"/>
+  </node>
+-->
+  
 </launch>

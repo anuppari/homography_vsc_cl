@@ -20,7 +20,7 @@
 Eigen::Matrix<double,4,3> diffMat(const Eigen::Quaterniond);
 
 class Controller
-{
+{   
     // ROS stuff
     ros::NodeHandle nh;
     ros::Subscriber camInfoSub;
@@ -28,6 +28,7 @@ class Controller
     ros::Subscriber panTiltSub;
     ros::Subscriber homogSolnSub;
     ros::Subscriber actualVelSub;
+    ros::Subscriber bebopVelSub;
     ros::ServiceClient setHomogReferenceClient;
     ros::Publisher velPubHomog;
     ros::Publisher velPubMocap;
@@ -65,10 +66,24 @@ class Controller
     bool useActualVelocities;
     Eigen::Vector3d vcActual;
     Eigen::Vector3d wcActual;
+    Eigen::Vector3d vBebopActual;
+    Eigen::Vector3d wBebopActual;
     double zStar;
     double filterAlpha; // in range [0,1]
     bool useZstar;
+    bool controlHistoryStack;
+    bool startHistoryStack;
+    bool fillHistoryStackBegin;
     
+    // predictor buffers
+    std::deque<ros::Time> velActualTimeBuffer;
+    std::deque<double> velActualTimeDiffBuffer;
+    std::deque<Eigen::Vector3d> vcActualBuffer;
+    std::deque<Eigen::Vector3d> wcActualBuffer;
+    bool usePredictor;
+    double homogUpdateRate;
+    double predictorTimeWindow;
+        
     // Mocap based control parameters
     std::string cameraName;
     std::string imageTFframe;
@@ -125,6 +140,8 @@ class Controller
     Eigen::Vector3d wcd;
     bool firstDes;
     bool secondDes;
+    double filterVc;
+    ros::Time startTimeDes;
     
 public:
     Controller()
@@ -143,6 +160,8 @@ public:
         nhp.param<double>("intWindowTime",intWindowTime,1.0);
         nhp.param<int>("stackSize",stackSize,20);
         nhp.param<double>("mocapUpdateRate",mocapUpdateRate,300.0);
+        nhp.param<double>("homogUpdateRate",homogUpdateRate,30.0);
+        nhp.param<double>("predictorTimeWindow",predictorTimeWindow,30.0);
         nhp.param<double>("zhatUpdateRate",zhatUpdateRate,500.0);
         nhp.param<double>("desUpdateRate",desUpdateRate,100.0);
         nhp.param<bool>("useActualVelocities",useActualVelocities,true);
@@ -151,6 +170,10 @@ public:
         nhp.param<double>("desHeight",desHeight,1.0);
         nhp.param<double>("filterAlpha",filterAlpha,0.2);
         nhp.param<bool>("useZstar",useZstar,false);
+        nhp.param<bool>("controlHistoryStack",controlHistoryStack,false);
+        nhp.param<bool>("fillHistoryStackBegin",fillHistoryStackBegin,false);
+        nhp.param<double>("filterVc",filterVc,0.0);
+        nhp.param<bool>("usePredictor",usePredictor,false);
         
         // Get camera parameters
         std::cout << "Getting camera parameters on topic: "+cameraName+"/camera_info" << std::endl;
@@ -162,6 +185,7 @@ public:
             ros::Duration(0.1).sleep();
         } while (!(ros::isShuttingDown()) and !gotCamParam);
         ROS_DEBUG("Got camera parameters");
+        std::cout << "Got camera parameters" << std::endl;
         
         // Initialize other parameters
         Kv = (Eigen::Vector3d(kvXY, kvXY, kvZ)).asDiagonal();
@@ -169,6 +193,8 @@ public:
         zStar = 0;
         vcActual = Eigen::Vector3d::Zero();
         wcActual = Eigen::Vector3d::Zero();
+        vBebopActual = Eigen::Vector3d::Zero();
+        wBebopActual = Eigen::Vector3d::Zero();
         
         // Get service handle for setting homography reference
         setHomogReferenceClient = nh.serviceClient<homography_vsc_cl::SetReference>("set_reference");
@@ -184,6 +210,7 @@ public:
         
         // some subscribers
         actualVelSub = nh.subscribe(imageTFframe+"/body_vel",1,&Controller::actualVelCB,this);
+        bebopVelSub = nh.subscribe("bebop/body_vel",1,&Controller::bebopVelCB,this);
         joySub = nh.subscribe("joy",1,&Controller::joyCB,this);
         panTiltSub = nh.subscribe("bebop/states/ARDrone3/CameraState/Orientation",1,&Controller::panTiltCB,this);
     }
@@ -191,7 +218,7 @@ public:
     void initializeStates()
     {
         // Initialize buffers
-        homogBuffSize = (int) (intWindowTime*300.0);
+        homogBuffSize = (int) (intWindowTime*homogUpdateRate);
         std::cout << "homogBuffSize: " << homogBuffSize << std::endl;
         tBuffHomog.resize(1,0);
         evBuffHomog.resize(3,0);
@@ -254,15 +281,17 @@ public:
                 std::cout << "failed to set desired" << std::endl;
             }
         }
-        desCamPos << -1*desRadius + desOrig[0]/4.0, desOrig[1]/4.0, desHeight;
-        Eigen::Matrix3d tempRot; 
-        tempRot << 0,0,1,-1,0,0,0,-1,0;
+        
+        desCamPos << desOrig[0]/4.0,  desRadius + desOrig[1]/4.0, desHeight;
+        Eigen::Matrix3d tempRot;
+        tempRot << -1,0,0,0,0,-1,0,-1,0;
         qPanTilt.setIdentity();
         desCamOrient = Eigen::Quaterniond(tempRot);
         desUpdateCB(ros::TimerEvent()); // call once to update signals
         pedDot << 0,0,0; // reset
         firstDes = true;
         secondDes = true;
+        startHistoryStack = false;
         
         // Subscribers
         homogSolnSub = nh.subscribe("homogDecompSoln",1,&Controller::homogCB,this);
@@ -288,7 +317,7 @@ public:
         uBuffHomog.resize(3,0);
         vcLastHomog << 0,0,0;
         firstHomog = true;
-        
+        startHistoryStack = false;
     }
     
     void homogCB(const homography_vsc_cl::HomogDecompSolns& soln)
@@ -296,6 +325,7 @@ public:
         if (soln.decomp_successful)
         {
             resetBuffersTimer.stop();
+            homography_vsc_cl::Debug msg;//debug
             // Find right solution
             Eigen::Vector3d n1(soln.n1.x, soln.n1.y, soln.n1.z);
             Eigen::Vector3d n2(soln.n2.x, soln.n2.y, soln.n2.z);
@@ -305,10 +335,14 @@ public:
             if ((q2.norm() > 0) && ((n1-nStar).squaredNorm() > (n2-nStar).squaredNorm()))
             {
                 q = q2.inverse();
+                msg.n = soln.n2;
+                msg.t.x = soln.pose2.position.x; msg.t.y = soln.pose2.position.y; msg.t.z = soln.pose2.position.z;
             }
             else
             {
                 q = q1.inverse();
+                msg.n = soln.n1;
+                msg.t.x = soln.pose1.position.x; msg.t.y = soln.pose1.position.y; msg.t.z = soln.pose1.position.z;
             }
             
             // compare to last solution
@@ -322,12 +356,11 @@ public:
             double alpha1 = soln.alphar;
             
             //debug
-            homography_vsc_cl::Debug msg;
             msg.header.stamp = ros::Time::now();
-            msg.q.x = q.inverse().x();
-            msg.q.y = q.inverse().y();
-            msg.q.z = q.inverse().z();
-            msg.q.w = q.inverse().w();
+            msg.q.x = q.x();
+            msg.q.y = q.y();
+            msg.q.z = q.z();
+            msg.q.w = q.w();
             msg.nStar.x = nStar.x();
             msg.nStar.y = nStar.y();
             msg.nStar.z = nStar.z();
@@ -335,14 +368,37 @@ public:
             msg.zStar = zStar;
             msg.newPixels.pr.x = pixels.x();
             msg.newPixels.pr.y = pixels.y();
+            msg.H = soln.H;
+            
+            Eigen::Vector3d pixelPredict;
+            Eigen::Quaterniond qPredict;
+            double alphaPredict;
             
             if (alpha1 > 0)
-            {
-                // Calculate control and publish
-                calculateControl(pixels, q, alpha1, msg, false);
-                qLastHomog = q;
+            {               
+                if ((evBuffHomog.cols() > 0) && (zhatHomog > 0) && (!std::isnan(zhatHomog)) && (!std::isinf(zhatHomog)))
+                {
+                    // predictor
+                    predictorUpdate(pixels, q, alpha1, pixelPredict, qPredict, alphaPredict);
+                    msg.pixelPredict.x = pixelPredict.x(); msg.pixelPredict.y = pixelPredict.y(); msg.pixelPredict.z = pixelPredict.z();
+                    msg.qPredict.w = qPredict.w(); msg.qPredict.x = qPredict.x(); msg.qPredict.y = qPredict.y(); msg.qPredict.z = qPredict.z();
+                    msg.alphaPredict = alphaPredict;
+                    if (usePredictor)
+                    {
+                        // Calculate control and publish
+                        calculateControl(pixelPredict, qPredict, alphaPredict, msg, false);
+                        qLastHomog = qPredict;
+                    }
+                }
+                
+                if (!usePredictor)
+                {
+                    // Calculate control and publish
+                    calculateControl(pixels, q, alpha1, msg, false);
+                    qLastHomog = q;
+                }
             }
-            if (!std::isnan(msg.vc.x) && !std::isnan(msg.vc.y) && !std::isnan(msg.vc.z))
+            if (!std::isnan(msg.vc.x) && !std::isnan(msg.vc.y) && !std::isnan(msg.vc.z) && !std::isnan(msg.wc.x) && !std::isnan(msg.wc.y) && !std::isnan(msg.wc.z))
             {
                 msg.vcLast.x = vcLastHomog.x(); msg.vcLast.y = vcLastHomog.y(); msg.vcLast.z = vcLastHomog.z(); 
                 vcLastHomog << msg.vc.x, msg.vc.y, msg.vc.z;
@@ -402,13 +458,14 @@ public:
         msg.newPixels.pr.x = pixels.x();
         msg.newPixels.pr.y = pixels.y();
         
+        
         if (alpha1 > 0)
         {
             // Calculate control and publish
             calculateControl(pixels, q, alpha1, msg, true);
             qLastMocap = q;
         }
-        if (!std::isnan(msg.vc.x) && !std::isnan(msg.vc.y) && !std::isnan(msg.vc.z))
+        if (!std::isnan(msg.vc.x) && !std::isnan(msg.vc.y) && !std::isnan(msg.vc.z) && !std::isnan(msg.wc.x) && !std::isnan(msg.wc.y) && !std::isnan(msg.wc.z))
         {
             msg.vcLast.x = vcLastMocap.x(); msg.vcLast.y = vcLastMocap.y(); msg.vcLast.z = vcLastMocap.z(); 
             vcLastMocap << msg.vc.x, msg.vc.y, msg.vc.z;
@@ -422,6 +479,7 @@ public:
     
     void zhatUpdateCB(const ros::TimerEvent& event)
     {
+        
         // Time
         ros::Time timestamp = ros::Time::now();
         double timeNow = timestamp.toSec();
@@ -433,7 +491,7 @@ public:
         
         // homography
         double zhatDotHomog = 0;
-        if (evBuffHomog.cols() > 0)
+        if ((evBuffHomog.cols() > 0 && !controlHistoryStack) || (startHistoryStack && controlHistoryStack))
         {
             double term1 = gamma1*evBuffHomog.rightCols<1>().transpose()*phiBuffHomog.rightCols<1>();
             double term2 = gamma1*gamma2*(YstackHomog.cwiseProduct((-1*YstackHomog*zhatHomog - UstackHomog).eval()).sum());
@@ -442,12 +500,11 @@ public:
             {
                 zhatDotHomog += term1;
             }
-            
         }
         
         // Mocap
         double zhatDotMocap = 0;
-        if (evBuffMocap.cols() > 0)
+        if ((evBuffMocap.cols() > 0 && !controlHistoryStack) || (startHistoryStack && controlHistoryStack))
         {
             double term1 = gamma1*evBuffMocap.rightCols<1>().transpose()*phiBuffMocap.rightCols<1>();
             double term2 = gamma1*gamma2*(YstackMocap.cwiseProduct((-1*YstackMocap*zhatMocap - UstackMocap).eval()).sum());
@@ -479,11 +536,36 @@ public:
         outputMsg.zTildeMocap = zStar - zhatMocap;
         outputMsg.zTildePercentHomog = (zStar - zhatHomog)/zStar;
         outputMsg.zTildePercentMocap = (zStar - zhatMocap)/zStar;
+        outputMsg.zStar = zStar;
+        outputMsg.zHatHomog = zhatHomog;
+        outputMsg.zHatMocap = zhatMocap;
+        outputMsg.zHatDotHomog = zhatDotHomog;
+        outputMsg.zHatDotMocap = zhatDotMocap;
         outputPub.publish(outputMsg);
     }
     
     void calculateControl(Eigen::Vector3d pixels, Eigen::Quaterniond q, double alpha1, homography_vsc_cl::Debug& msg, bool forMocap)
     {
+        // get position error expressed in world
+        try
+        {
+            tf::StampedTransform desImageWrtImage;
+            tfl.waitForTransform("bebop_image", "bebop_image_des", ros::Time(0), ros::Duration(0.1));
+            tfl.lookupTransform("bebop_image", "bebop_image_des", ros::Time(0), desImageWrtImage);
+            msg.desImageWrtImage.translation.x = desImageWrtImage.getOrigin().getX();
+            msg.desImageWrtImage.translation.y = desImageWrtImage.getOrigin().getY();
+            msg.desImageWrtImage.translation.z = desImageWrtImage.getOrigin().getZ();
+            msg.desImageWrtImage.rotation.x = desImageWrtImage.getRotation().getX();
+            msg.desImageWrtImage.rotation.y = desImageWrtImage.getRotation().getY();
+            msg.desImageWrtImage.rotation.z = desImageWrtImage.getRotation().getZ();
+            msg.desImageWrtImage.rotation.w = desImageWrtImage.getRotation().getW();
+            
+        }
+        catch(tf::TransformException ex)
+        {
+            return;
+        }
+        
         // Signals
         Eigen::Vector3d m1 = camMat.inverse()*pixels;
         Eigen::Vector3d pe(pixels(0),pixels(1),-1*std::log(alpha1));
@@ -529,27 +611,76 @@ public:
         Eigen::Matrix3d temp1 = Eigen::Matrix3d::Identity();
         temp1.topRightCorner<2,1>() = -1*m1.head<2>();
         Eigen::Matrix3d Lv = camMatFactor*temp1;
-        msg.LvCol1.x = Lv(0,0); msg.LvCol1.y = Lv(0,1); msg.LvCol1.z = Lv(0,2);
-        msg.LvCol2.x = Lv(1,0); msg.LvCol2.y = Lv(1,1); msg.LvCol2.z = Lv(1,2);
-        msg.LvCol3.x = Lv(2,0); msg.LvCol3.y = Lv(2,1); msg.LvCol3.z = Lv(2,2); 
+        msg.LvRow1.x = Lv(0,0); msg.LvRow1.y = Lv(0,1); msg.LvRow1.z = Lv(0,2);
+        msg.LvRow2.x = Lv(1,0); msg.LvRow2.y = Lv(1,1); msg.LvRow2.z = Lv(1,2);
+        msg.LvRow3.x = Lv(2,0); msg.LvRow3.y = Lv(2,1); msg.LvRow3.z = Lv(2,2); 
         
         // Parameter estimate
         double zhat = (forMocap ? zhatMocap : zhatHomog);
+        
+        // check the position error of the homography using Zhat
+        if (!forMocap)
+        {
+            // calculate m* from m
+            Eigen::Matrix3d H = Eigen::Matrix3d::Identity();
+            for (int ii = 0; ii<9; ii++)
+            {
+                H(ii/3,ii%3) = msg.H[ii];
+            }
+            Eigen::Vector3d m1Star(0.0,0.0,0.0);
+            if (alpha1 > 0)
+            {
+                m1Star = (1/alpha1)*(H.inverse()*m1);
+                Eigen::Vector3d m1StarBar = zhat*m1Star;
+                Eigen::Vector3d nStar(msg.n.x,msg.n.y,msg.n.z);
+                double dStar = nStar.transpose()*m1StarBar;
+                Eigen::Vector3d xfNorm(msg.t.x,msg.t.y,msg.t.z);
+                Eigen::Vector3d xf = dStar*xfNorm;
+                tf::Transform referenceWrtImageZhat;
+                referenceWrtImageZhat.setOrigin(tf::Vector3(xf.x(),xf.y(),xf.z()));
+                Eigen::Quaterniond qInv = q.inverse();
+                referenceWrtImageZhat.setRotation(tf::Quaternion(qInv.x(),qInv.y(),qInv.z(),qInv.w()));
+                
+                // get position error expressed in world using zhat
+                try
+                {
+                    tfbr.sendTransform(tf::StampedTransform(referenceWrtImageZhat.inverse(), msg.header.stamp, "bebop_image_ref", "bebop_image_zhat"));
+                    tf::StampedTransform desImageWrtImageZhat;
+                    tfl.waitForTransform("bebop_image_zhat", "bebop_image_des", ros::Time(0), ros::Duration(0.1));
+                    tfl.lookupTransform("bebop_image_zhat", "bebop_image_des", ros::Time(0), desImageWrtImageZhat);
+                    msg.desImageWrtImageZhat.translation.x = desImageWrtImageZhat.getOrigin().getX();
+                    msg.desImageWrtImageZhat.translation.y = desImageWrtImageZhat.getOrigin().getY();
+                    msg.desImageWrtImageZhat.translation.z = desImageWrtImageZhat.getOrigin().getZ();
+                    msg.desImageWrtImageZhat.rotation.x = desImageWrtImageZhat.getRotation().getX();
+                    msg.desImageWrtImageZhat.rotation.y = desImageWrtImageZhat.getRotation().getY();
+                    msg.desImageWrtImageZhat.rotation.z = desImageWrtImageZhat.getRotation().getZ();
+                    msg.desImageWrtImageZhat.rotation.w = desImageWrtImageZhat.getRotation().getW();
+                }
+                catch(tf::TransformException ex)
+                {
+                    return;
+                }
+                
+            }
+        }
         
         // control
         Eigen::Vector3d vcLast = (forMocap ? vcLastMocap : vcLastHomog);
         Eigen::Vector3d wcLast = (forMocap ? wcLastMocap : wcLastHomog);
         Eigen::Vector3d wc = -Kw*Eigen::Vector3d(qTilde.vec()) + qTilde.inverse()*wcd; // qTilde.inverse()*wcd rotates wcd to current camera frame, equivalent to qTilde^-1*wcd*qTilde in paper
-        if (!firstRun)
+        if (!firstRun && !std::isnan(wc.x()) && !std::isnan(wc.y()) && !std::isnan(wc.z()))
         {
-            wc = (1-filterAlpha)*wc + filterAlpha*wcLast;
+            wc = (1-filterVc)*wc + filterVc*wcLast;
         }
         msg.wc.x = wc.x(); msg.wc.y = wc.y(); msg.wc.z = wc.z(); 
-        Eigen::Vector3d phi = Lv*m1.cross(wc) - pedDot;
-        Eigen::Vector3d vc = (1.0/alpha1)*Lv.inverse()*(Kv*ev + phi*zhat);
+        Eigen::Vector3d phiTerm1 = Lv*m1.cross(wc);
+        Eigen::Vector3d phi = phiTerm1 - pedDot;
+        Eigen::Vector3d vcterm1 = (1.0/alpha1)*Lv.inverse()*(Kv*ev);
+        Eigen::Vector3d vcterm2 = (1.0/alpha1)*Lv.inverse()*(phi*zhat);
+        
         if (useZstar)
         {
-            vc = (1.0/alpha1)*Lv.inverse()*(Kv*ev + phi*zStar);
+            vcterm2 = (1.0/alpha1)*Lv.inverse()*(phi*zStar);
             //std::cout << "vc\n" << vc <<std::endl;
             //std::cout << "1/alpha\n" << 1/alpha1 <<std::endl;
             //std::cout << "Lv inverse\n" << Lv.inverse() <<std::endl;
@@ -559,24 +690,29 @@ public:
             //std::cout << "phi*zStar\n" << phi*zStar <<std::endl;
             //std::cout << std::endl << std::endl;
         }
+        Eigen::Vector3d vc = vcterm1 + vcterm2;
+        msg.vcterm1.x = vcterm1.x(); msg.vcterm1.y = vcterm1.y(); msg.vcterm1.z = vcterm1.z(); 
+        msg.vcterm2.x = vcterm2.x(); msg.vcterm2.y = vcterm2.y(); msg.vcterm2.z = vcterm2.z(); 
         
         if (!firstRun && !std::isnan(vc.x()) && !std::isnan(vc.y()) && !std::isnan(vc.z()))
         {
-            vc = (1-filterAlpha)*vc + filterAlpha*vcLast;
+            vc = (1-filterVc)*vc + filterVc*vcLast;
         }
         
         msg.vc.x = vc.x(); msg.vc.y = vc.y(); msg.vc.z = vc.z();
         msg.phi.x = phi.x(); msg.phi.y = phi.y(); msg.phi.z = phi.z(); 
         msg.zHat = zhat;
         msg.pedDot.x = pedDot.x(); msg.pedDot.y = pedDot.y(); msg.pedDot.z = pedDot.z();
+        msg.phiTerm1.x = phiTerm1.x(); msg.phiTerm1.y = phiTerm1.y(); msg.phiTerm1.z = phiTerm1.z(); 
         
         // transforming velocities to bebop body frame
         tf::StampedTransform tfCamera2Body;
         tfl.waitForTransform(cameraName,imageTFframe,ros::Time(0),ros::Duration(0.01));
         tfl.lookupTransform(cameraName,imageTFframe,ros::Time(0),tfCamera2Body);
+        Eigen::Vector3d pCamera2Body(tfCamera2Body.getOrigin().getX(),tfCamera2Body.getOrigin().getY(),tfCamera2Body.getOrigin().getZ());
         Eigen::Quaterniond qCamera2Body(tfCamera2Body.getRotation().getW(),tfCamera2Body.getRotation().getX(),tfCamera2Body.getRotation().getY(),tfCamera2Body.getRotation().getZ());
-        Eigen::Vector3d vcBody = qCamera2Body*vc;
-        Eigen::Vector3d wcBody = qCamera2Body*wc;
+        Eigen::Vector3d vcBody = qCamera2Body*vc - wBebopActual.cross(pCamera2Body);// linear velocity in body = q_cam_wrt_body * vc * q_cam_wrt_body.inverse() - w_body_wrt_world X p_cam_wrt_body
+        Eigen::Vector3d wcBody = qCamera2Body*wc;// angular velocity in body = q_cam_wrt_body * wc * q_cam_wrt_body.inverse()
         
         // Construct message
         geometry_msgs::Twist twistMsg;
@@ -645,11 +781,10 @@ public:
                     msg.minValOld = minVal;
                     msg.newVal = scriptY.squaredNorm();
                     //std::cout << "minVal: " << minVal << std::endl;
-                    if (scriptY.squaredNorm() > minVal)
+                    if (((scriptY.squaredNorm() > minVal) && !controlHistoryStack) || ((scriptY.squaredNorm() > minVal) && startHistoryStack && controlHistoryStack) || ((minVal <= 0.001) && fillHistoryStackBegin && !controlHistoryStack))
                     {
                         YstackMocap.col(index) = scriptY;
                         UstackMocap.col(index) = scriptU;
-                        //std::cout << "index: " << index << std::endl;
                     }
                     minVal = YstackMocap.colwise().squaredNorm().minCoeff(&index);
                     msg.minVal = minVal;
@@ -692,7 +827,7 @@ public:
                     double minVal = YstackHomog.colwise().squaredNorm().minCoeff(&index);
                     msg.minValOld = minVal;
                     msg.newVal = scriptY.squaredNorm();
-                    if (scriptY.squaredNorm() > minVal)
+                    if (((scriptY.squaredNorm() > minVal) && !controlHistoryStack) || ((scriptY.squaredNorm() > minVal) && startHistoryStack && controlHistoryStack) || ((minVal <= 0.001) && fillHistoryStackBegin && !controlHistoryStack))
                     {
                         YstackHomog.col(index) = scriptY;
                         UstackHomog.col(index) = scriptU;
@@ -723,6 +858,10 @@ public:
     
     void desUpdateCB(const ros::TimerEvent& event)
     {
+        if (firstDes)
+        {
+            startTimeDes = ros::Time::now();
+        }
         // time
         ros::Time timestamp = ros::Time::now();
         //double delT = timestamp.toSec() - desLastTime;
@@ -733,7 +872,9 @@ public:
         // update velocities
         Eigen::Vector3d vcd = qPanTilt*Eigen::Vector3d(2*M_PI*desRadius/desPeriod, 0, 0);
         wcd = qPanTilt*Eigen::Vector3d(0,-2*M_PI/desPeriod,0);
-        //Eigen::Vector3d vcd = qPanTilt*Eigen::Vector3d(std::sin(timestamp.toSec()),0,0);
+        //Eigen::Vector3d vcd = qPanTilt*Eigen::Vector3d(2*M_PIl*0.1*0.5*std::cos(2*M_PIl*0.1*(timestamp-startTimeDes).toSec()),0,0);
+        //Eigen::Vector3d vcd;
+        //vcd << 0,0,0;
         //wcd << 0,0,0;
         
         // Integrate
@@ -857,6 +998,11 @@ public:
             // (re)initialize buffers and subscribers/timers
             initializeStates();
         }
+        if (msg.buttons[6])//back button starts the stack
+        {
+            startHistoryStack = true;
+        }
+        
     }
     
     void refPubCB(const ros::TimerEvent& event)
@@ -903,7 +1049,89 @@ public:
     {
         vcActual << twist->twist.linear.x,twist->twist.linear.y,twist->twist.linear.z;
         wcActual << twist->twist.angular.x,twist->twist.angular.y,twist->twist.angular.z;
+        // update buffers
+        velActualTimeBuffer.push_back(ros::Time::now());
+        vcActualBuffer.push_back(vcActual);
+        wcActualBuffer.push_back(wcActual);
+        if (velActualTimeBuffer.size() > 1)
+        {
+            // get time diff
+            std::deque<ros::Time>::iterator timeIt = velActualTimeBuffer.end();
+            double velActualTimeBufferDiffNew = (*(timeIt-1) - *(timeIt-2)).toSec();
+            velActualTimeDiffBuffer.push_back(velActualTimeBufferDiffNew);
+            //std::cout << "new time diff: " << velActualTimeBufferDiffNew << std::endl;
+            double velActualTimeBufferDiffTotal = (*(timeIt-1)-*(velActualTimeBuffer.begin())).toSec();
+            
+            //std::cout << "total time diff: " << velActualTimeBufferDiffTotal << std::endl;
+            
+            // check if buffer time window has exceeded the desired time window
+            if (velActualTimeBufferDiffTotal > predictorTimeWindow)
+            {
+                // if the buffer time window is larger than the time window pop off the oldest values until it is under the time window
+                while (((*(timeIt-1)-*velActualTimeBuffer.begin()).toSec()) > predictorTimeWindow)
+                {
+                    // remove old data
+                    velActualTimeBuffer.pop_front();
+                    vcActualBuffer.pop_front();
+                    wcActualBuffer.pop_front();
+                    velActualTimeDiffBuffer.pop_front();
+                }
+            }
+        }
+        else
+        {
+            velActualTimeDiffBuffer.push_back(0.0);
+        }
     }
+    
+    void bebopVelCB(const geometry_msgs::TwistStampedConstPtr& twist)
+    {
+        vBebopActual << twist->twist.linear.x,twist->twist.linear.y,twist->twist.linear.z;
+        wBebopActual << twist->twist.angular.x,twist->twist.angular.y,twist->twist.angular.z;
+    }
+    
+    void predictorUpdate(Eigen::Vector3d pixel0, Eigen::Quaterniond q0, double alpha0, Eigen::Vector3d& pixelPredict, Eigen::Quaterniond& qPredict, double& alphaPredict)
+    {
+        Eigen::Vector3d peHat(pixel0.x(),pixel0.y(),std::log(alpha0));
+        Eigen::Quaterniond qHat(q0.w(),q0.x(),q0.y(),q0.z());
+        //std::cout << "time buffer size: " << velActualTimeBuffer.size() << std::endl;
+        for (int ii = 0; ii < velActualTimeBuffer.size(); ii++)
+        {
+            double uHat = peHat.x();
+            double vHat = peHat.y();
+            double alphaHat = std::exp(peHat.z());
+            Eigen::Vector3d pHat(uHat,vHat,1.0);
+            //std::cout << "pHat: x: " << pHat.x() << " y: " << pHat.y() << " z: " << pHat.z() << std::endl;
+            Eigen::Vector3d mHat = camMat.inverse()*pHat;
+            //std::cout << "mHat: x: " << mHat.x() << " y: " << mHat.y() << " z: " << mHat.z() << std::endl;
+            Eigen::Matrix3d camMatFactor = camMat;
+            camMatFactor.block<2,1>(0,2) << 0, 0;
+            Eigen::Matrix3d tempHat = Eigen::Matrix3d::Identity();
+            tempHat.topRightCorner<2,1>() = -1*mHat.head<2>();
+            Eigen::Matrix3d LvHat = camMatFactor*tempHat;
+            Eigen::Vector3d vcHat = vcActualBuffer.at(ii);
+            //std::cout << "vcHat: x: " << vcHat.x() << " y: " << vcHat.y() << " z: " << vcHat.z() << std::endl;
+            Eigen::Vector3d wcHat = wcActualBuffer.at(ii);
+            //std::cout << "wcHat: x: " << wcHat.x() << " y: " << wcHat.y() << " z: " << wcHat.z() << std::endl;
+            double timeHat = velActualTimeDiffBuffer.at(ii);
+            //std::cout << "timeHat: " << timeHat << std::endl;
+            Eigen::Vector3d peHatDot = -1*(alphaHat/zhatHomog)*(LvHat*vcHat) + LvHat*(mHat.cross(wcHat));
+            //std::cout << "peHatDot: x: " << peHatDot.x() << " y: " << peHatDot.y() << " z: " << peHatDot.z() << std::endl;
+            peHat += peHatDot*timeHat;
+            
+            Eigen::Vector4d qHatTemp(qHat.w(),qHat.x(),qHat.y(),qHat.z());
+            qHatTemp += 0.5*diffMat(qHat)*wcHat*timeHat;
+            qHat = Eigen::Quaterniond(qHatTemp(0),qHatTemp(1),qHatTemp(2),qHatTemp(3));
+            qHat.normalize();
+        }
+        
+        //std::cout << "pixel0: x: " << pixel0.x() << " y: " << pixel0.y() << " z: " << pixel0.z() << std::endl;
+        pixelPredict = Eigen::Vector3d(peHat.x(), peHat.y(), 1.0);
+        //std::cout << "pixelPredict: x: " << pixelPredict.x() << " y: " << pixelPredict.y() << " z: " << pixelPredict.z() << std::endl;
+        qPredict = Eigen::Quaterniond(qHat.w(), qHat.x(), qHat.y(), qHat.z());
+        alphaPredict = std::exp(peHat.z());
+    }
+    
 }; // end Controller class
 
 // Calculate differential matrix for relationship between quaternion derivative and angular velocity.

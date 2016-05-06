@@ -148,6 +148,8 @@ add_executable(homography_decomposition_node src/homography_decomposition_node.c
 add_executable(controller_node src/controller_node.cpp)
 add_executable(vsc_sim_node src/vsc_sim_node.cpp)
 add_executable(joy_stick_arbiter src/joy_stick_arbiter.cpp)
+add_executable(experimentSaveNode src/experimentSaveNode.cpp)
+
 
 ## Add cmake target dependencies of the executable
 ## same as for the library above
@@ -156,6 +158,7 @@ add_dependencies(homography_decomposition_node ${${PROJECT_NAME}_EXPORTED_TARGET
 add_dependencies(controller_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(vsc_sim_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(joy_stick_arbiter ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(experimentSaveNode ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
 target_link_libraries(image_processing_node
@@ -179,6 +182,11 @@ target_link_libraries(vsc_sim_node
 )
 
 target_link_libraries(joy_stick_arbiter
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+
+target_link_libraries(experimentSaveNode
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
 )

@@ -104,6 +104,16 @@ class Joycall
 		
 		Joycall(double step_gain_des)
 		{
+            // Parameters
+            ros::NodeHandle nhp("~"); // "private" nodehandle, used to access private parameters
+            nhp.param<double>("lowerX", x_bounds[0], -1.75);
+            nhp.param<double>("upperX", x_bounds[1], 1.75);
+            nhp.param<double>("lowerY", y_bounds[0], -1.75);
+            nhp.param<double>("upperY", y_bounds[1], 1.75);
+            nhp.param<double>("lowerZ", z_bounds[0], 0.0);
+            nhp.param<double>("upperZ", z_bounds[1], 2.5);
+            
+            
 			step_gain = step_gain_des;
 			velCmdHomogSub = nh.subscribe("desVelHomog",1,&Joycall::velCmdHomogCB,this);
             velCmdMocapSub = nh.subscribe("desVelMocap",1,&Joycall::velCmdMocapCB,this);

@@ -15,6 +15,12 @@
   
   <!-- joystick control node -->
   <node pkg="homography_vsc_cl" type="joy_stick_arbiter" name="joy_stick_arbiter" output="screen">
+      <param name="lowerX" value="-1.75" />
+      <param name="upperX" value="1.75" />
+      <param name="lowerY" value="-1.75" />
+      <param name="upperY" value="1.75" />
+      <param name="lowerZ" value="0.0" />
+      <param name="upperZ" value="2.5" />
   </node>
   
   <!-- bebop velocity publisher -->
@@ -34,7 +40,9 @@
   </node>
   
   <!-- image processing to find markers -->
-  <node pkg="homography_vsc_cl" type="image_processing_node" name="image_processing_node" output="screen" />
+  <node pkg="homography_vsc_cl" type="image_processing_node" name="image_processing_node" output="screen" >
+    <param name="useMocap" value="false" />
+  </node>
   
   <!-- Homography decomposition -->
   <node pkg="homography_vsc_cl" type="homography_decomposition_node" name="homography_decomposition_node" output="screen" />
