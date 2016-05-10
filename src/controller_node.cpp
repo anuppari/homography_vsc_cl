@@ -43,7 +43,8 @@ class Controller
     ros::Timer zhatUpdateTimer;
     ros::Timer refPubTimer;
     ros::Timer desUpdateTimer;
-    ros::Timer resetBuffersTimer;
+    ros::Timer resetHomogBuffersWatchdogTimer;
+    ros::Timer predictorTimer;
     
     // Camera parameters
     Eigen::Matrix3d camMat;
@@ -59,6 +60,7 @@ class Controller
     Eigen::Matrix3d Kw;
     int stackSize;
     double intWindowTime;
+    double homogUpdateRate;
     double mocapUpdateRate;
     double zhatUpdateRate;
     double desUpdateRate;
@@ -75,14 +77,20 @@ class Controller
     bool startHistoryStack;
     bool fillHistoryStackBegin;
     
-    // predictor buffers
+    // predictor
     std::deque<ros::Time> velActualTimeBuffer;
     std::deque<double> velActualTimeDiffBuffer;
     std::deque<Eigen::Vector3d> vcActualBuffer;
     std::deque<Eigen::Vector3d> wcActualBuffer;
     bool usePredictor;
-    double homogUpdateRate;
     double predictorTimeWindow;
+    double predictorUpdateRate;
+    Eigen::Vector3d homogPixelNew;
+    Eigen::Quaterniond homogQNew;
+    double homogAlphaNew;
+    Eigen::Vector3d pixelPredict;
+    Eigen::Quaterniond qPredict;
+    double alphaPredict;
         
     // Mocap based control parameters
     std::string cameraName;
@@ -161,7 +169,6 @@ public:
         nhp.param<int>("stackSize",stackSize,20);
         nhp.param<double>("mocapUpdateRate",mocapUpdateRate,300.0);
         nhp.param<double>("homogUpdateRate",homogUpdateRate,30.0);
-        nhp.param<double>("predictorTimeWindow",predictorTimeWindow,30.0);
         nhp.param<double>("zhatUpdateRate",zhatUpdateRate,500.0);
         nhp.param<double>("desUpdateRate",desUpdateRate,100.0);
         nhp.param<bool>("useActualVelocities",useActualVelocities,true);
@@ -174,6 +181,8 @@ public:
         nhp.param<bool>("fillHistoryStackBegin",fillHistoryStackBegin,false);
         nhp.param<double>("filterVc",filterVc,0.0);
         nhp.param<bool>("usePredictor",usePredictor,false);
+        nhp.param<double>("predictorTimeWindow",predictorTimeWindow,0.25);
+        nhp.param<double>("predictorUpdateRate",predictorUpdateRate,100.0);
         
         // Get camera parameters
         std::cout << "Getting camera parameters on topic: "+cameraName+"/camera_info" << std::endl;
@@ -200,17 +209,17 @@ public:
         setHomogReferenceClient = nh.serviceClient<homography_vsc_cl::SetReference>("set_reference");
         
         // publishers
-        velPubHomog = nh.advertise<geometry_msgs::Twist>("desVelHomog",10);
-        velPubMocap = nh.advertise<geometry_msgs::Twist>("desVelMocap",10);
-        outputPub = nh.advertise<homography_vsc_cl::Output>("controller_output",10);
-        debugMocapPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_mocap",10);
-        debugHomogPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_homog",10);
-        debugDesPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_des",10);
-        debugZhatPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_zhat",10);
+        velPubHomog = nh.advertise<geometry_msgs::Twist>("desVelHomog",1);
+        velPubMocap = nh.advertise<geometry_msgs::Twist>("desVelMocap",1);
+        outputPub = nh.advertise<homography_vsc_cl::Output>("controller_output",1);
+        debugMocapPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_mocap",1);
+        debugHomogPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_homog",1);
+        debugDesPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_des",1);
+        debugZhatPub = nh.advertise<homography_vsc_cl::Debug>("controller_debug_zhat",1);
         
-        // some subscribers
+        // subscribers
         actualVelSub = nh.subscribe(imageTFframe+"/body_vel",1,&Controller::actualVelCB,this);
-        bebopVelSub = nh.subscribe("bebop/body_vel",1,&Controller::bebopVelCB,this);
+        bebopVelSub = nh.subscribe(cameraName+"/body_vel",1,&Controller::bebopVelCB,this);
         joySub = nh.subscribe("joy",1,&Controller::joyCB,this);
         panTiltSub = nh.subscribe("bebop/states/ARDrone3/CameraState/Orientation",1,&Controller::panTiltCB,this);
     }
@@ -305,9 +314,13 @@ public:
         mocapControlTimer = nh.createTimer(ros::Duration(1.0/mocapUpdateRate),&Controller::mocapCB,this,false);
         zhatUpdateTimer = nh.createTimer(ros::Duration(1.0/zhatUpdateRate),&Controller::zhatUpdateCB,this,false);
         refPubTimer = nh.createTimer(ros::Duration(1.0/10),&Controller::refPubCB,this,false);
-        resetBuffersTimer = nh.createTimer(ros::Duration(0.1),&Controller::resetBuffersCB,this,false);
+        resetHomogBuffersWatchdogTimer = nh.createTimer(ros::Duration(0.1),&Controller::resetBuffersCB,this,false);
+        predictorTimer = nh.createTimer(ros::Duration(1.0/predictorUpdateRate),&Controller::predictorUpdateCB,this,false);
     }
-    
+    void predictorUpdateCB(const ros::TimerEvent& event)
+    {
+        
+    }
     void resetBuffersCB(const ros::TimerEvent& event)
     {
         // reset buffers
@@ -324,7 +337,7 @@ public:
     {
         if (soln.decomp_successful)
         {
-            resetBuffersTimer.stop();
+            resetHomogBuffersWatchdogTimer.stop();
             homography_vsc_cl::Debug msg;//debug
             // Find right solution
             Eigen::Vector3d n1(soln.n1.x, soln.n1.y, soln.n1.z);
@@ -370,33 +383,31 @@ public:
             msg.newPixels.pr.y = pixels.y();
             msg.H = soln.H;
             
-            Eigen::Vector3d pixelPredict;
-            Eigen::Quaterniond qPredict;
-            double alphaPredict;
+            // Signals
+            Eigen::Vector3d pe(pixels(0),pixels(1),-1*std::log(alpha1));
+            Eigen::Vector3d ev = pe - ped;
             
-            if (alpha1 > 0)
+            if ((alpha1 > 0))
             {               
-                if ((evBuffHomog.cols() > 0) && (zhatHomog > 0) && (!std::isnan(zhatHomog)) && (!std::isinf(zhatHomog)))
+                if (usePredictor && (zhatHomog > 0) && (!std::isnan(zhatHomog)) && (!std::isinf(zhatHomog)) && (YstackHomog.cols() > 0) && (std::abs(ev(0)) < 50) && (std::abs(ev(1)) < 50))
                 {
                     // predictor
                     predictorUpdate(pixels, q, alpha1, pixelPredict, qPredict, alphaPredict);
                     msg.pixelPredict.x = pixelPredict.x(); msg.pixelPredict.y = pixelPredict.y(); msg.pixelPredict.z = pixelPredict.z();
                     msg.qPredict.w = qPredict.w(); msg.qPredict.x = qPredict.x(); msg.qPredict.y = qPredict.y(); msg.qPredict.z = qPredict.z();
                     msg.alphaPredict = alphaPredict;
-                    if (usePredictor)
-                    {
-                        // Calculate control and publish
-                        calculateControl(pixelPredict, qPredict, alphaPredict, msg, false);
-                        qLastHomog = qPredict;
-                    }
+                    
+                    // Calculate control and publish
+                    calculateControl(pixelPredict, qPredict, alphaPredict, msg, false);
+                    qLastHomog = qPredict;
                 }
-                
-                if (!usePredictor)
+                else
                 {
                     // Calculate control and publish
                     calculateControl(pixels, q, alpha1, msg, false);
                     qLastHomog = q;
                 }
+
             }
             if (!std::isnan(msg.vc.x) && !std::isnan(msg.vc.y) && !std::isnan(msg.vc.z) && !std::isnan(msg.wc.x) && !std::isnan(msg.wc.y) && !std::isnan(msg.wc.z))
             {
@@ -408,7 +419,7 @@ public:
             }
             msg.firstRun = firstHomog;
             debugHomogPub.publish(msg);
-            resetBuffersTimer.start();
+            resetHomogBuffersWatchdogTimer.start();
         }
     }
     
@@ -1049,6 +1060,7 @@ public:
     {
         vcActual << twist->twist.linear.x,twist->twist.linear.y,twist->twist.linear.z;
         wcActual << twist->twist.angular.x,twist->twist.angular.y,twist->twist.angular.z;
+        
         // update buffers
         velActualTimeBuffer.push_back(ros::Time::now());
         vcActualBuffer.push_back(vcActual);
@@ -1115,7 +1127,15 @@ public:
             //std::cout << "wcHat: x: " << wcHat.x() << " y: " << wcHat.y() << " z: " << wcHat.z() << std::endl;
             double timeHat = velActualTimeDiffBuffer.at(ii);
             //std::cout << "timeHat: " << timeHat << std::endl;
-            Eigen::Vector3d peHatDot = -1*(alphaHat/zhatHomog)*(LvHat*vcHat) + LvHat*(mHat.cross(wcHat));
+            Eigen::Vector3d peHatDot;
+            if (useZstar)
+            {
+                peHatDot = -1*(alphaHat/zStar)*(LvHat*vcHat) + LvHat*(mHat.cross(wcHat));
+            }
+            else
+            {
+                peHatDot = -1*(alphaHat/zhatHomog)*(LvHat*vcHat) + LvHat*(mHat.cross(wcHat));
+            }
             //std::cout << "peHatDot: x: " << peHatDot.x() << " y: " << peHatDot.y() << " z: " << peHatDot.z() << std::endl;
             peHat += peHatDot*timeHat;
             
