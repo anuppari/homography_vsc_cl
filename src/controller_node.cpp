@@ -82,6 +82,10 @@ class Controller
     std::deque<double> velActualTimeDiffBuffer;
     std::deque<Eigen::Vector3d> vcActualBuffer;
     std::deque<Eigen::Vector3d> wcActualBuffer;
+    std::deque<ros::Time> velTimeBuffer;
+    std::deque<double> velTimeDiffBuffer;
+    std::deque<Eigen::Vector3d> vcBuffer;
+    std::deque<Eigen::Vector3d> wcBuffer;
     bool usePredictor;
     double predictorTimeWindow;
     double predictorUpdateRate;
@@ -703,8 +707,47 @@ public:
         }
         Eigen::Vector3d vc = vcterm1 + vcterm2;
         msg.vcterm1.x = vcterm1.x(); msg.vcterm1.y = vcterm1.y(); msg.vcterm1.z = vcterm1.z(); 
-        msg.vcterm2.x = vcterm2.x(); msg.vcterm2.y = vcterm2.y(); msg.vcterm2.z = vcterm2.z(); 
+        msg.vcterm2.x = vcterm2.x(); msg.vcterm2.y = vcterm2.y(); msg.vcterm2.z = vcterm2.z();
         
+        if (!forMocap)
+        {
+            // Save velocities for predictor
+            // update buffers
+            velTimeBuffer.push_back(ros::Time::now());
+            vcBuffer.push_back(vc);
+            wcBuffer.push_back(wc);
+            if (velTimeBuffer.size() > 1)
+            {
+                // get time diff
+                std::deque<ros::Time>::iterator timeIt = velTimeBuffer.end();
+                double velTimeBufferDiffNew = (*(timeIt-1) - *(timeIt-2)).toSec();
+                velTimeDiffBuffer.push_back(velTimeBufferDiffNew);
+                //std::cout << "new time diff: " << velActualTimeBufferDiffNew << std::endl;
+                double velTimeBufferDiffTotal = (*(timeIt-1)-*(velTimeBuffer.begin())).toSec();
+                //std::cout << "total time diff: " << velActualTimeBufferDiffTotal << std::endl;
+                
+                // check if buffer time window has exceeded the desired time window
+                if (velTimeBufferDiffTotal > predictorTimeWindow)
+                {
+                    // if the buffer time window is larger than the time window pop off the oldest values until it is under the time window
+                    while (((*(timeIt-1)-*velTimeBuffer.begin()).toSec()) > predictorTimeWindow)
+                    {
+                        // remove old data
+                        velTimeBuffer.pop_front();
+                        vcBuffer.pop_front();
+                        wcBuffer.pop_front();
+                        velTimeDiffBuffer.pop_front();
+                    }
+                }
+            }
+            else
+            {
+                velTimeDiffBuffer.push_back(0.0);
+            }
+        }
+        
+        
+        // filter
         if (!firstRun && !std::isnan(vc.x()) && !std::isnan(vc.y()) && !std::isnan(vc.z()))
         {
             vc = (1-filterVc)*vc + filterVc*vcLast;
@@ -1107,7 +1150,8 @@ public:
         Eigen::Vector3d peHat(pixel0.x(),pixel0.y(),std::log(alpha0));
         Eigen::Quaterniond qHat(q0.w(),q0.x(),q0.y(),q0.z());
         //std::cout << "time buffer size: " << velActualTimeBuffer.size() << std::endl;
-        for (int ii = 0; ii < velActualTimeBuffer.size(); ii++)
+        int velBufferSize = useActualVelocities ? velActualTimeBuffer.size() : velTimeBuffer.size();
+        for (int ii = 0; ii < velBufferSize; ii++)
         {
             double uHat = peHat.x();
             double vHat = peHat.y();
@@ -1121,11 +1165,11 @@ public:
             Eigen::Matrix3d tempHat = Eigen::Matrix3d::Identity();
             tempHat.topRightCorner<2,1>() = -1*mHat.head<2>();
             Eigen::Matrix3d LvHat = camMatFactor*tempHat;
-            Eigen::Vector3d vcHat = vcActualBuffer.at(ii);
+            Eigen::Vector3d vcHat = useActualVelocities ? vcActualBuffer.at(ii) : vcBuffer.at(ii);
             //std::cout << "vcHat: x: " << vcHat.x() << " y: " << vcHat.y() << " z: " << vcHat.z() << std::endl;
-            Eigen::Vector3d wcHat = wcActualBuffer.at(ii);
+            Eigen::Vector3d wcHat = useActualVelocities ? wcActualBuffer.at(ii) : wcBuffer.at(ii);
             //std::cout << "wcHat: x: " << wcHat.x() << " y: " << wcHat.y() << " z: " << wcHat.z() << std::endl;
-            double timeHat = velActualTimeDiffBuffer.at(ii);
+            double timeHat = useActualVelocities ? velActualTimeDiffBuffer.at(ii) : velTimeDiffBuffer.at(ii);
             //std::cout << "timeHat: " << timeHat << std::endl;
             Eigen::Vector3d peHatDot;
             if (useZstar)

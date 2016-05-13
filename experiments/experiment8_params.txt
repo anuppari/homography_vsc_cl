@@ -1,6 +1,3 @@
-<launch>
-  <!-- controller -->
-  <node pkg="homography_vsc_cl" type="controller_node" name="controller_node" output="screen" >
     <param name="cameraName" value="bebop" />
     <param name="imageTFframe" value="bebop_image" />
     <param name="redTFframe" value="ugv1" />
@@ -24,25 +21,6 @@
     <param name="fillHistoryStackBegin" value="false" />
     <param name="filterVc" value="0.0" />
     <param name="usePredictor" value="true" />
-    <param name="predictorTimeWindow" value="0.25" />
+    <param name="predictorTimeWindow" value="0.2" />
     <param name="predictorUpdateRate" value="100.0" />
     <param name="homogUpdateRate" value="30.0" />
-  </node>
-  
-  <!-- experiment save -->
-  <node pkg="homography_vsc_cl" type="experimentSaveNode" name="experimentSaveNode" output="screen" >
-    <param name="saveExperiment" value="true" />
-    <param name="saveExperimentFilename" value="/home/ncr/ncr_ws/src/homography_vsc_cl/experiments/experiment11.txt" />    
-  </node>
-  
-  <!-- Start the camera recorder -->
-<!--
-  <node pkg="image_view" type="video_recorder" name="video_recorder">
-      <remap from="image" to="/bebop/image_raw"/>
-      <param name="fps" value="30"/>
-      <param name="filename" value="/home/ncr/ncr_ws/experiment0.avi"/>
-      <param name="max_depth_range" value="0"/>
-  </node>
--->
-  
-</launch>
